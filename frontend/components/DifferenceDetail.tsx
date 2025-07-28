@@ -254,6 +254,31 @@ export function DifferenceDetail({ difference }: DifferenceDetailProps) {
         }
         return `-- Unable to determine target column type`
         
+      case DiffType.COLUMN_NULLABLE_CHANGED:
+        if (difference.target_value !== undefined) {
+          // Get column type from metadata or make a reasonable assumption
+          let columnType = 'VARCHAR(255)' // default fallback
+          if (difference.metadata && difference.metadata.column_type) {
+            columnType = difference.metadata.column_type
+          } else if (difference.source_value && typeof difference.source_value === 'object' && difference.source_value.column_type) {
+            columnType = difference.source_value.column_type
+          }
+          
+          const nullable = difference.target_value ? 'NULL' : 'NOT NULL'
+          return `-- Execute on SOURCE database:\nALTER TABLE ${tableName} MODIFY COLUMN ${columnName} ${columnType} ${nullable};`
+        }
+        return `-- Unable to determine target nullable state`
+        
+      case DiffType.COLUMN_DEFAULT_CHANGED:
+        if (difference.target_value !== undefined) {
+          if (difference.target_value === null) {
+            return `-- Execute on SOURCE database:\nALTER TABLE ${tableName} ALTER COLUMN ${columnName} DROP DEFAULT;`
+          } else {
+            return `-- Execute on SOURCE database:\nALTER TABLE ${tableName} ALTER COLUMN ${columnName} SET DEFAULT ${difference.target_value};`
+          }
+        }
+        return `-- Unable to determine target default value`
+        
       case DiffType.INDEX_MISSING_TARGET:
         // Source Only: Option 1 = Remove from Source
         return `-- Execute on SOURCE database:\nDROP INDEX ${columnName} ON ${tableName};`
@@ -388,6 +413,31 @@ export function DifferenceDetail({ difference }: DifferenceDetailProps) {
           }
         }
         return `-- Unable to determine source column type`
+        
+      case DiffType.COLUMN_NULLABLE_CHANGED:
+        if (difference.source_value !== undefined) {
+          // Get column type from metadata or make a reasonable assumption
+          let columnType = 'VARCHAR(255)' // default fallback
+          if (difference.metadata && difference.metadata.column_type) {
+            columnType = difference.metadata.column_type
+          } else if (difference.target_value && typeof difference.target_value === 'object' && difference.target_value.column_type) {
+            columnType = difference.target_value.column_type
+          }
+          
+          const nullable = difference.source_value ? 'NULL' : 'NOT NULL'
+          return `-- Execute on TARGET database:\nALTER TABLE ${tableName} MODIFY COLUMN ${columnName} ${columnType} ${nullable};`
+        }
+        return `-- Unable to determine source nullable state`
+        
+      case DiffType.COLUMN_DEFAULT_CHANGED:
+        if (difference.source_value !== undefined) {
+          if (difference.source_value === null) {
+            return `-- Execute on TARGET database:\nALTER TABLE ${tableName} ALTER COLUMN ${columnName} DROP DEFAULT;`
+          } else {
+            return `-- Execute on TARGET database:\nALTER TABLE ${tableName} ALTER COLUMN ${columnName} SET DEFAULT ${difference.source_value};`
+          }
+        }
+        return `-- Unable to determine source default value`
         
       case DiffType.INDEX_MISSING_TARGET:
         // Source Only: Option 2 = Add to Target

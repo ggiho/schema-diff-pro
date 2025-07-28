@@ -1,5 +1,5 @@
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Depends
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 import asyncio
 import logging
 
@@ -8,6 +8,7 @@ from models.base import (
     ComparisonProgress
 )
 from services.comparison_engine import ComparisonEngine
+from services.history_manager import HistoryManager
 from core.config import settings
 from api.websockets.comparison_ws import ConnectionManager
 
@@ -17,6 +18,7 @@ router = APIRouter()
 
 # In-memory storage for results (in production, use Redis or database)
 comparison_results: Dict[str, ComparisonResult] = {}
+history_manager = HistoryManager()
 
 
 @router.post("/compare")
@@ -50,6 +52,15 @@ async def start_comparison(
             if result:
                 # Store result
                 comparison_results[comparison_id] = result
+                
+                # Add to history
+                history_manager.add_comparison(
+                    comparison_id,
+                    source_config,
+                    target_config,
+                    len(result.differences),
+                    result.summary
+                )
                 
                 # Send completion via WebSocket
                 await manager.send_complete(
@@ -141,3 +152,9 @@ async def cancel_comparison(comparison_id: str) -> Dict[str, str]:
             return {"status": "cancelled"}
     
     return {"status": "not_found"}
+
+
+@router.get("/recent/list")
+async def get_recent_comparisons(limit: int = 10) -> List[Dict[str, Any]]:
+    """Get recent comparisons"""
+    return history_manager.get_recent(limit)

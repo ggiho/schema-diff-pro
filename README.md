@@ -90,9 +90,6 @@ SECRET_KEY=your-secret-key-here
 DATABASE_POOL_SIZE=20
 DATABASE_MAX_OVERFLOW=10
 
-# Redis Cache
-REDIS_URL=redis://localhost:6379
-
 # CORS Origins
 BACKEND_CORS_ORIGINS=http://localhost:3000
 ```
@@ -135,7 +132,7 @@ Edit `next.config.js` to update API endpoints if needed.
 │   Next.js Frontend      │────▶│   FastAPI Backend       │
 │   - React Query         │     │   - Async SQLAlchemy    │
 │   - Monaco Editor       │     │   - WebSocket Support   │
-│   - Tailwind CSS        │     │   - Redis Caching       │
+│   - Tailwind CSS        │     │   - Connection Pooling  │
 └─────────────────────────┘     └─────────────────────────┘
                                            │
                                            ▼
@@ -196,7 +193,7 @@ docker-compose -f docker-compose.prod.yml up -d
 Ensure all production environment variables are properly set:
 - Use strong SECRET_KEY
 - Configure proper CORS origins
-- Set up Redis for caching
+- Configure connection pooling
 - Configure database connection pools
 
 ## Troubleshooting
@@ -215,7 +212,7 @@ Ensure all production environment variables are properly set:
 
 3. **High Memory Usage**
    - Adjust DATABASE_POOL_SIZE
-   - Configure Redis memory limits
+   - Optimize database connection pools
    - Limit concurrent comparisons
 
 ## Contributing

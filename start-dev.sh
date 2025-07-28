@@ -2,12 +2,6 @@
 
 echo "Starting Schema Diff Pro in development mode..."
 
-# Check if Redis is running
-if ! docker ps | grep -q redis-schema-diff; then
-    echo "Starting Redis..."
-    docker run -d --name redis-schema-diff -p 6379:6379 redis:7-alpine
-fi
-
 # Create .env file if it doesn't exist
 if [ ! -f backend/.env ]; then
     echo "Creating backend .env file..."
@@ -41,5 +35,5 @@ echo ""
 echo "Press Ctrl+C to stop all services"
 
 # Wait for interrupt
-trap "kill $BACKEND_PID $FRONTEND_PID; docker stop redis-schema-diff; exit" INT
+trap "kill $BACKEND_PID $FRONTEND_PID; exit" INT
 wait

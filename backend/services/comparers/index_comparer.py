@@ -59,6 +59,10 @@ class IndexComparer(BaseComparer):
             if not self.should_compare_object(schema_name, table_name):
                 continue
             
+            # Skip PRIMARY key indexes (these are handled by constraint comparer)
+            if index_name == "PRIMARY":
+                continue
+            
             index_key = f"{schema_name}.{table_name}.{index_name}"
             
             indexes[index_key] = {

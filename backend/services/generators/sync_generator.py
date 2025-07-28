@@ -117,11 +117,29 @@ class SyncScriptGenerator:
     # Table generators
     def _gen_create_table(self, diff: Difference) -> Tuple[str, str]:
         """Generate CREATE TABLE statement"""
-        # This would need the full table definition from source_value
         table_name = f"`{diff.schema_name}`.`{diff.object_name}`"
         
-        # Simplified example - real implementation would use full table def
-        forward = f"-- TODO: CREATE TABLE {table_name} AS IN SOURCE;"
+        # Check if we have table definition in target_value
+        if diff.target_value and isinstance(diff.target_value, dict):
+            # Extract table structure
+            columns = diff.target_value.get("columns", [])
+            if columns:
+                col_defs = []
+                for col in columns:
+                    if isinstance(col, dict):
+                        col_name = col.get("column_name", "unknown")
+                        col_type = col.get("column_type", "VARCHAR(255)")
+                        nullable = "NULL" if col.get("is_nullable", True) else "NOT NULL"
+                        default = f"DEFAULT {col.get('column_default')}" if col.get("column_default") else ""
+                        col_defs.append(f"`{col_name}` {col_type} {nullable} {default}".strip())
+                
+                if col_defs:
+                    forward = f"CREATE TABLE {table_name} (\n  " + ",\n  ".join(col_defs) + "\n);"
+                    rollback = f"DROP TABLE IF EXISTS {table_name};"
+                    return forward, rollback
+        
+        # Fallback to TODO comment if we don't have enough info
+        forward = f"-- TODO: CREATE TABLE {table_name} (copy structure from source database);"
         rollback = f"DROP TABLE IF EXISTS {table_name};"
         
         return forward, rollback
@@ -144,12 +162,26 @@ class SyncScriptGenerator:
         column_name = f"`{diff.sub_object_name}`"
         
         if diff.target_value:
-            col_def = diff.target_value
-            column_type = col_def.get("column_type", "VARCHAR(255)")
-            nullable = "NULL" if col_def.get("is_nullable", True) else "NOT NULL"
-            default = f"DEFAULT {col_def.get('column_default')}" if col_def.get("column_default") else ""
+            # Handle both dict and string formats
+            if isinstance(diff.target_value, dict):
+                col_def = diff.target_value
+                column_type = col_def.get("column_type", "VARCHAR(255)")
+                nullable = "NULL" if col_def.get("is_nullable", True) else "NOT NULL"
+                default_val = col_def.get("column_default")
+                default = f"DEFAULT '{default_val}'" if default_val and default_val != "NULL" else ""
+                
+                forward = f"""-- Add Column: {column_name}
+-- Type: {column_type}
+-- Nullable: {nullable}
+-- Default: {default_val or 'None'}
+ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type} {nullable} {default};""".strip()
+            else:
+                # If it's a string, it's likely just the column type
+                column_type = str(diff.target_value)
+                forward = f"""-- Add Column: {column_name}
+-- Type: {column_type}
+ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type} NULL;"""
             
-            forward = f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type} {nullable} {default};"
             rollback = f"ALTER TABLE {table_name} DROP COLUMN {column_name};"
             
             return forward, rollback
@@ -173,8 +205,25 @@ class SyncScriptGenerator:
         table_name = f"`{diff.schema_name}`.`{diff.object_name}`"
         column_name = f"`{diff.sub_object_name}`"
         
-        forward = f"ALTER TABLE {table_name} MODIFY COLUMN {column_name} {diff.target_value};"
-        rollback = f"ALTER TABLE {table_name} MODIFY COLUMN {column_name} {diff.source_value};"
+        # Extract column type from value
+        target_type = diff.target_value
+        source_type = diff.source_value
+        
+        if isinstance(target_type, dict):
+            target_type = target_type.get("column_type", "VARCHAR(255)")
+        if isinstance(source_type, dict):
+            source_type = source_type.get("column_type", "VARCHAR(255)")
+        
+        forward = f"""-- Modify Column Type: {column_name}
+-- From: {source_type}
+-- To: {target_type}
+-- WARNING: Data conversion may be required
+ALTER TABLE {table_name} MODIFY COLUMN {column_name} {target_type};"""
+        
+        rollback = f"""-- Rollback Column Type: {column_name}
+-- From: {target_type}
+-- To: {source_type}
+ALTER TABLE {table_name} MODIFY COLUMN {column_name} {source_type};"""
         
         return forward, rollback
     
@@ -200,10 +249,22 @@ class SyncScriptGenerator:
         table_name = f"`{diff.schema_name}`.`{diff.object_name}`"
         column_name = f"`{diff.sub_object_name}`"
         
-        # Need column type - in real implementation would get from metadata
-        column_type = "VARCHAR(255)"  # Placeholder
+        # Try to get column type from metadata if available
+        column_type = "VARCHAR(255)"  # Default
+        if hasattr(diff, 'metadata') and diff.metadata:
+            if isinstance(diff.metadata, dict):
+                column_type = diff.metadata.get("column_type", column_type)
         
-        if diff.target_value == "NOT NULL":
+        # Determine the nullable state
+        target_nullable = diff.target_value
+        source_nullable = diff.source_value
+        
+        if isinstance(target_nullable, bool):
+            target_nullable = "NULL" if target_nullable else "NOT NULL"
+        if isinstance(source_nullable, bool):
+            source_nullable = "NULL" if source_nullable else "NOT NULL"
+        
+        if target_nullable == "NOT NULL" or target_nullable == False:
             forward = f"ALTER TABLE {table_name} MODIFY COLUMN {column_name} {column_type} NOT NULL;"
             rollback = f"ALTER TABLE {table_name} MODIFY COLUMN {column_name} {column_type} NULL;"
         else:
@@ -216,17 +277,29 @@ class SyncScriptGenerator:
     def _gen_create_index(self, diff: Difference) -> Tuple[str, str]:
         """Generate CREATE INDEX statement"""
         table_name = f"`{diff.schema_name}`.`{diff.object_name}`"
-        index_name = f"`{diff.sub_object_name}`"
+        index_name = diff.sub_object_name  # Don't add backticks here, they're added later if needed
         
         if diff.target_value:
-            idx_data = diff.target_value
-            unique = "UNIQUE" if idx_data.get("is_unique") else ""
-            columns = idx_data.get("columns", "")
-            idx_type = f"USING {idx_data.get('index_type')}" if idx_data.get("index_type") != "BTREE" else ""
+            if isinstance(diff.target_value, dict):
+                idx_data = diff.target_value
+                unique = "UNIQUE" if idx_data.get("is_unique") else ""
+                columns = idx_data.get("columns", "")
+                idx_type = idx_data.get("index_type", "BTREE")
+                idx_type_clause = f"USING {idx_type}" if idx_type != "BTREE" else ""
+                
+                forward = f"""-- Create {unique.strip() or 'Regular'} Index: {index_name}
+-- Table: {table_name}
+-- Columns: {columns}
+-- Type: {idx_type}
+CREATE {unique} INDEX `{index_name}` ON {table_name} ({columns}) {idx_type_clause};""".strip()
+            else:
+                # If it's a string, create a basic index
+                forward = f"""-- Create Index: {index_name}
+-- Table: {table_name}
+-- Columns: {diff.target_value}
+CREATE INDEX `{index_name}` ON {table_name} ({diff.target_value});"""
             
-            forward = f"CREATE {unique} INDEX {index_name} ON {table_name} ({columns}) {idx_type};"
-            rollback = f"DROP INDEX {index_name} ON {table_name};"
-            
+            rollback = f"DROP INDEX `{index_name}` ON {table_name};"
             return forward, rollback
         
         return None, None
@@ -234,33 +307,67 @@ class SyncScriptGenerator:
     def _gen_drop_index(self, diff: Difference) -> Tuple[str, str]:
         """Generate DROP INDEX statement"""
         table_name = f"`{diff.schema_name}`.`{diff.object_name}`"
-        index_name = f"`{diff.sub_object_name}`"
+        index_name = diff.sub_object_name  # Don't add backticks here
         
-        forward = f"DROP INDEX {index_name} ON {table_name};"
-        rollback = f"-- TODO: RECREATE INDEX {index_name};"
+        # Add details about the index being dropped
+        if isinstance(diff.source_value, dict):
+            idx_data = diff.source_value
+            columns = idx_data.get("columns", "")
+            idx_type = idx_data.get("index_type", "BTREE")
+            unique = "UNIQUE" if idx_data.get("is_unique") else "Regular"
+            
+            forward = f"""-- Drop {unique} Index: {index_name}
+-- Table: {table_name}
+-- Columns: {columns}
+-- Type: {idx_type}
+DROP INDEX `{index_name}` ON {table_name};"""
+        else:
+            forward = f"""-- Drop Index: {index_name}
+-- Table: {table_name}
+-- Original definition: {diff.source_value}
+DROP INDEX `{index_name}` ON {table_name};"""
+        
+        rollback = f"-- TODO: RECREATE INDEX `{index_name}` with original definition;"
         
         return forward, rollback
     
     def _gen_recreate_index(self, diff: Difference) -> Tuple[str, str]:
         """Generate statements to recreate an index"""
         table_name = f"`{diff.schema_name}`.`{diff.object_name}`"
-        index_name = f"`{diff.sub_object_name}`"
+        index_name = diff.sub_object_name  # Don't add backticks here
         
         # Drop and recreate
-        drop_stmt = f"DROP INDEX {index_name} ON {table_name};"
+        drop_stmt = f"DROP INDEX `{index_name}` ON {table_name};"
         
         if diff.target_value:
-            idx_data = diff.target_value
-            unique = "UNIQUE" if idx_data.get("is_unique") else ""
-            columns = idx_data.get("columns", "")
-            idx_type = f"USING {idx_data.get('index_type')}" if idx_data.get("index_type") != "BTREE" else ""
+            if isinstance(diff.target_value, dict):
+                idx_data = diff.target_value
+                unique = "UNIQUE" if idx_data.get("is_unique") else ""
+                columns = idx_data.get("columns", "")
+                idx_type = idx_data.get("index_type", "BTREE")
+                idx_type_clause = f"USING {idx_type}" if idx_type != "BTREE" else ""
+                
+                create_stmt = f"""-- Recreate Index: {index_name}
+-- Table: {table_name}
+-- Columns: {columns}
+-- Type: {idx_type}
+CREATE {unique} INDEX `{index_name}` ON {table_name} ({columns}) {idx_type_clause};""".strip()
+            else:
+                # If it's a string, create a basic index
+                create_stmt = f"CREATE INDEX `{index_name}` ON {table_name} ({diff.target_value});"
             
-            create_stmt = f"CREATE {unique} INDEX {index_name} ON {table_name} ({columns}) {idx_type};"
-            
-            forward = f"{drop_stmt}\n{create_stmt}"
+            forward = f"{drop_stmt}\n\n{create_stmt}"
             
             # Rollback would recreate with original definition
-            rollback = f"-- TODO: RECREATE INDEX {index_name} WITH ORIGINAL DEFINITION;"
+            if diff.source_value and isinstance(diff.source_value, dict):
+                src_data = diff.source_value
+                unique = "UNIQUE" if src_data.get("is_unique") else ""
+                columns = src_data.get("columns", "")
+                idx_type = src_data.get("index_type", "BTREE")
+                idx_type_clause = f"USING {idx_type}" if idx_type != "BTREE" else ""
+                rollback = f"DROP INDEX `{index_name}` ON {table_name};\nCREATE {unique} INDEX `{index_name}` ON {table_name} ({columns}) {idx_type_clause};".strip()
+            else:
+                rollback = f"-- TODO: RECREATE INDEX `{index_name}` WITH ORIGINAL DEFINITION;"
             
             return forward, rollback
         
@@ -270,39 +377,71 @@ class SyncScriptGenerator:
     def _gen_create_constraint(self, diff: Difference) -> Tuple[str, str]:
         """Generate CREATE CONSTRAINT statement"""
         table_name = f"`{diff.schema_name}`.`{diff.object_name}`"
-        constraint_name = f"`{diff.sub_object_name}`"
+        constraint_name = diff.sub_object_name  # Don't add backticks here
         
         if diff.target_value:
-            const_data = diff.target_value
-            const_type = const_data.get("constraint_type")
-            
-            if const_type == "FOREIGN KEY":
-                columns = const_data.get("columns", "")
-                ref_table = f"`{const_data.get('referenced_table_schema')}`.`{const_data.get('referenced_table_name')}`"
-                ref_columns = const_data.get("referenced_columns", "")
-                update_rule = const_data.get("update_rule", "RESTRICT")
-                delete_rule = const_data.get("delete_rule", "RESTRICT")
+            if isinstance(diff.target_value, dict):
+                const_data = diff.target_value
+                const_type = const_data.get("constraint_type")
                 
-                forward = f"""ALTER TABLE {table_name} 
+                if const_type == "FOREIGN KEY":
+                    columns = const_data.get("columns", "")
+                    ref_schema = const_data.get("referenced_table_schema", "")
+                    ref_table_name = const_data.get("referenced_table_name", "")
+                    ref_table = f"`{ref_schema}`.`{ref_table_name}`" if ref_schema and ref_table_name else "UNKNOWN_TABLE"
+                    ref_columns = const_data.get("referenced_columns", "")
+                    update_rule = const_data.get("update_rule", "RESTRICT")
+                    delete_rule = const_data.get("delete_rule", "RESTRICT")
+                    
+                    forward = f"""-- Add Foreign Key Constraint: {constraint_name}
+-- References: {ref_schema}.{ref_table_name} ({ref_columns})
+-- Rules: ON UPDATE {update_rule}, ON DELETE {delete_rule}
+ALTER TABLE {table_name} 
 ADD CONSTRAINT {constraint_name} 
 FOREIGN KEY ({columns}) 
 REFERENCES {ref_table} ({ref_columns})
 ON UPDATE {update_rule} ON DELETE {delete_rule};"""
-                
-            elif const_type == "PRIMARY KEY":
-                columns = const_data.get("columns", "")
-                forward = f"ALTER TABLE {table_name} ADD PRIMARY KEY ({columns});"
-                
-            elif const_type == "UNIQUE":
-                columns = const_data.get("columns", "")
-                forward = f"ALTER TABLE {table_name} ADD CONSTRAINT {constraint_name} UNIQUE ({columns});"
-                
+                    
+                elif const_type == "PRIMARY KEY":
+                    columns = const_data.get("columns", "")
+                    forward = f"""-- Add Primary Key Constraint
+-- Columns: {columns}
+ALTER TABLE {table_name} ADD PRIMARY KEY ({columns});"""
+                    
+                elif const_type == "UNIQUE":
+                    columns = const_data.get("columns", "")
+                    forward = f"""-- Add Unique Constraint: {constraint_name}
+-- Columns: {columns}
+ALTER TABLE {table_name} ADD CONSTRAINT {constraint_name} UNIQUE ({columns});"""
+                    
+                else:
+                    forward = f"-- TODO: ADD {const_type} CONSTRAINT {constraint_name};"
+                    
             else:
-                forward = f"-- TODO: ADD {const_type} CONSTRAINT {constraint_name};"
+                # Handle string format
+                forward = f"-- Add constraint: {constraint_name}\n-- Definition: {diff.target_value}\n-- TODO: Complete constraint definition;"
             
-            rollback = f"ALTER TABLE {table_name} DROP CONSTRAINT {constraint_name};"
+            # Generate appropriate rollback based on constraint type
+            if isinstance(diff.target_value, dict):
+                const_type = diff.target_value.get("constraint_type", "")
+                if const_type == "PRIMARY KEY":
+                    rollback = f"ALTER TABLE {table_name} DROP PRIMARY KEY;"
+                elif const_type == "FOREIGN KEY":
+                    rollback = f"ALTER TABLE {table_name} DROP FOREIGN KEY {constraint_name};"
+                elif const_type == "UNIQUE":
+                    rollback = f"ALTER TABLE {table_name} DROP INDEX {constraint_name};"
+                else:
+                    rollback = f"-- TODO: DROP CONSTRAINT {constraint_name};"
+            else:
+                # Guess based on string content
+                if "PRIMARY" in str(diff.target_value):
+                    rollback = f"ALTER TABLE {table_name} DROP PRIMARY KEY;"
+                elif "FOREIGN" in str(diff.target_value):
+                    rollback = f"ALTER TABLE {table_name} DROP FOREIGN KEY {constraint_name};"
+                else:
+                    rollback = f"ALTER TABLE {table_name} DROP INDEX {constraint_name};"
             
-            return forward, rollback
+            return forward.strip(), rollback
         
         return None, None
     
@@ -311,15 +450,67 @@ ON UPDATE {update_rule} ON DELETE {delete_rule};"""
         table_name = f"`{diff.schema_name}`.`{diff.object_name}`"
         constraint_name = f"`{diff.sub_object_name}`"
         
-        forward = f"ALTER TABLE {table_name} DROP CONSTRAINT {constraint_name};"
-        rollback = f"-- TODO: RECREATE CONSTRAINT {constraint_name};"
+        # Generate appropriate drop statement based on constraint type
+        if isinstance(diff.source_value, dict):
+            const_type = diff.source_value.get("constraint_type", "")
+            if const_type == "PRIMARY KEY":
+                forward = f"-- Drop Primary Key\nALTER TABLE {table_name} DROP PRIMARY KEY;"
+                rollback = f"-- TODO: RECREATE PRIMARY KEY with original definition"
+            elif const_type == "FOREIGN KEY":
+                columns = diff.source_value.get("columns", "")
+                ref_table = diff.source_value.get("referenced_table_name", "")
+                ref_columns = diff.source_value.get("referenced_columns", "")
+                forward = f"-- Drop Foreign Key: {constraint_name} ({columns}) -> {ref_table}({ref_columns})\nALTER TABLE {table_name} DROP FOREIGN KEY {constraint_name};"
+                rollback = f"-- TODO: RECREATE FOREIGN KEY {constraint_name}"
+            elif const_type == "UNIQUE":
+                columns = diff.source_value.get("columns", "")
+                forward = f"-- Drop Unique Constraint: {constraint_name} ({columns})\nALTER TABLE {table_name} DROP INDEX {constraint_name};"
+                rollback = f"-- TODO: RECREATE UNIQUE CONSTRAINT {constraint_name}"
+            else:
+                forward = f"-- Drop {const_type} constraint: {constraint_name}\nALTER TABLE {table_name} DROP CONSTRAINT {constraint_name};"
+                rollback = f"-- TODO: RECREATE CONSTRAINT {constraint_name};"
+        else:
+            # Fallback for string format
+            forward = f"-- Drop constraint: {constraint_name}\n-- Original definition: {diff.source_value}\nALTER TABLE {table_name} DROP CONSTRAINT {constraint_name};"
+            rollback = f"-- TODO: RECREATE CONSTRAINT {constraint_name};"
         
         return forward, rollback
     
     def _gen_recreate_constraint(self, diff: Difference) -> Tuple[str, str]:
         """Generate statements to recreate a constraint"""
-        # Similar to recreate index
-        return self._gen_drop_constraint(diff)
+        table_name = f"`{diff.schema_name}`.`{diff.object_name}`"
+        constraint_name = diff.sub_object_name  # Don't add backticks here
+        
+        # First drop the old constraint
+        drop_stmt, _ = self._gen_drop_constraint(diff)
+        
+        # Then create the new one
+        create_stmt, rollback_stmt = self._gen_create_constraint(diff)
+        
+        if drop_stmt and create_stmt:
+            forward = f"{drop_stmt}\n\n{create_stmt}"
+            # For rollback, we'd need to recreate the original
+            if isinstance(diff.source_value, dict):
+                # Create a temporary diff for the original constraint
+                original_diff = Difference(
+                    diff_type=diff.diff_type,
+                    severity=diff.severity,
+                    object_type=diff.object_type,
+                    schema_name=diff.schema_name,
+                    object_name=diff.object_name,
+                    sub_object_name=diff.sub_object_name,
+                    source_value=None,
+                    target_value=diff.source_value,  # Use source as target for rollback
+                    description=diff.description
+                )
+                rollback_create, _ = self._gen_create_constraint(original_diff)
+                rollback = f"-- Drop modified constraint\nALTER TABLE {table_name} DROP CONSTRAINT {constraint_name};\n\n{rollback_create}"
+            else:
+                rollback = f"-- TODO: RECREATE CONSTRAINT {constraint_name} WITH ORIGINAL DEFINITION"
+            
+            return forward, rollback
+        
+        return None, None
     
     def _format_script(self, statements: List[str], title: str) -> str:
         """Format SQL script with header and sections"""

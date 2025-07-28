@@ -39,6 +39,7 @@ backend/venv/
 frontend/.next/
 frontend/out/
 backend/backend.log
+backend/data/
 *.db
 *.sqlite
 *.sqlite3

@@ -93,16 +93,17 @@ export function ResultsSummary({ result }: ResultsSummaryProps) {
       {/* Affected Objects */}
       <div className="grid gap-6 md:grid-cols-2">
         <div className="rounded-lg border bg-card p-6">
-          <h3 className="mb-4 text-lg font-semibold">Affected Schemas</h3>
+          <h3 className="mb-4 text-lg font-semibold">
+            Affected Schemas ({result.summary.schemas_affected.length})
+          </h3>
           {result.summary.schemas_affected.length > 0 ? (
-            <ul className="space-y-2">
+            <div className="space-y-2">
               {result.summary.schemas_affected.map((schema) => (
-                <li key={schema} className="flex items-center gap-2">
-                  <div className="h-2 w-2 rounded-full bg-primary" />
-                  <span className="text-sm">{schema}</span>
-                </li>
+                <div key={schema} className="rounded-md bg-white px-3 py-2 border">
+                  <span className="text-sm font-medium">{schema}</span>
+                </div>
               ))}
-            </ul>
+            </div>
           ) : (
             <p className="text-sm text-muted-foreground">No schemas affected</p>
           )}

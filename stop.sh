@@ -22,8 +22,4 @@ fi
 pkill -f "uvicorn main:app" 2>/dev/null
 pkill -f "npm run dev" 2>/dev/null
 
-# Stop Redis
-docker stop redis-schema-diff > /dev/null 2>&1
-echo "✅ Redis stopped"
-
 echo "✅ All services stopped"

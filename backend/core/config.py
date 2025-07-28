@@ -19,9 +19,6 @@ class Settings(BaseSettings):
     DATABASE_POOL_TIMEOUT: int = 30
     DATABASE_POOL_RECYCLE: int = 3600
     
-    # Redis
-    REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379")
-    CACHE_TTL: int = 3600  # 1 hour
     
     # WebSocket
     WS_MESSAGE_QUEUE_SIZE: int = 100

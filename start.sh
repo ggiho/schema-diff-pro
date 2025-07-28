@@ -3,12 +3,6 @@
 echo "🚀 Starting Schema Diff Pro..."
 echo ""
 
-# Check if Redis is running
-if ! docker ps | grep -q redis-schema-diff; then
-    echo "📦 Starting Redis..."
-    docker run -d --name redis-schema-diff -p 6379:6379 redis:7-alpine > /dev/null
-fi
-
 # Backend
 echo "🔧 Starting backend server..."
 cd backend
@@ -61,7 +55,6 @@ cleanup() {
     echo ""
     echo "🛑 Stopping services..."
     kill $BACKEND_PID $FRONTEND_PID 2>/dev/null
-    docker stop redis-schema-diff > /dev/null 2>&1
     rm -f .backend.pid .frontend.pid
     echo "✅ All services stopped"
     exit 0

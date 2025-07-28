@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { DatabaseSelector } from '@/components/DatabaseSelector'
 import { ComparisonOptions } from '@/components/ComparisonOptions'
 import { ComparisonProgress } from '@/components/ComparisonProgress'
@@ -10,21 +10,29 @@ import { Button } from '@/components/ui/button'
 import { useComparisonStore } from '@/lib/store'
 import { startComparison } from '@/lib/api'
 import { toast } from 'react-hot-toast'
-import { Database, Play } from 'lucide-react'
+import { Database, Play, RotateCcw } from 'lucide-react'
 
 export default function HomePage() {
   const [isComparing, setIsComparing] = useState(false)
-  const [comparisonId, setComparisonId] = useState<string | null>(null)
-  const [showResults, setShowResults] = useState(false)
+  const [isHydrated, setIsHydrated] = useState(false)
   
   const { 
     sourceConfig, 
     targetConfig, 
     comparisonOptions,
+    currentComparisonId,
+    currentComparisonResult,
     setSourceConfig,
     setTargetConfig,
-    setComparisonOptions 
+    setComparisonOptions,
+    setCurrentComparison,
+    clearComparison
   } = useComparisonStore()
+
+  // Handle hydration
+  useEffect(() => {
+    setIsHydrated(true)
+  }, [])
 
   const handleStartComparison = async () => {
     if (!sourceConfig || !targetConfig) {
@@ -33,35 +41,60 @@ export default function HomePage() {
     }
 
     setIsComparing(true)
-    setShowResults(false)
+    clearComparison() // Clear previous results
 
     try {
       const result = await startComparison(sourceConfig, targetConfig, comparisonOptions)
-      setComparisonId(result.comparison_id)
+      setCurrentComparison(result.comparison_id, null)
     } catch (error) {
       toast.error('Failed to start comparison')
       setIsComparing(false)
     }
   }
 
-  const handleComparisonComplete = () => {
+  const handleComparisonComplete = (result: any) => {
     setIsComparing(false)
-    setShowResults(true)
+    setCurrentComparison(currentComparisonId, result)
   }
+
+  const handleNewComparison = () => {
+    clearComparison()
+  }
+
+  // Don't render until hydrated to prevent hydration mismatches
+  if (!isHydrated) {
+    return null
+  }
+
+  // Determine current view based on state
+  const showResults = currentComparisonId && currentComparisonResult && !isComparing
+  const showSetup = !isComparing && !showResults
 
   return (
     <div className="min-h-screen bg-background">
       <header className="border-b">
         <div className="container mx-auto px-4 py-4">
-          <div className="flex items-center gap-2">
-            <Database className="h-8 w-8 text-primary" />
-            <h1 className="text-2xl font-bold">Schema Diff Pro</h1>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Database className="h-8 w-8 text-primary" />
+              <h1 className="text-2xl font-bold">Schema Diff Pro</h1>
+            </div>
+            {showResults && (
+              <Button
+                variant="outline"
+                onClick={handleNewComparison}
+                className="gap-2"
+              >
+                <RotateCcw className="h-4 w-4" />
+                New Comparison
+              </Button>
+            )}
           </div>
         </div>
       </header>
 
       <main className="container mx-auto px-4 py-8">
-        {!isComparing && !showResults && (
+        {showSetup && (
           <>
             <div className="grid gap-8 md:grid-cols-2">
               <DatabaseSelector
@@ -101,20 +134,17 @@ export default function HomePage() {
           </>
         )}
 
-        {isComparing && comparisonId && (
+        {isComparing && currentComparisonId && (
           <ComparisonProgress
-            comparisonId={comparisonId}
+            comparisonId={currentComparisonId}
             onComplete={handleComparisonComplete}
           />
         )}
 
-        {showResults && comparisonId && (
+        {showResults && currentComparisonId && (
           <ComparisonResults
-            comparisonId={comparisonId}
-            onNewComparison={() => {
-              setShowResults(false)
-              setComparisonId(null)
-            }}
+            comparisonId={currentComparisonId}
+            onNewComparison={handleNewComparison}
           />
         )}
       </main>

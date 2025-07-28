@@ -4,12 +4,12 @@ import { useEffect, useState } from 'react'
 import { ComparisonProgress as ComparisonProgressType } from '@/types'
 import { Progress } from './ui/progress'
 import { Loader2 } from 'lucide-react'
-import { getComparisonStatus } from '@/lib/api'
+import { getComparisonStatus, getComparisonResult } from '@/lib/api'
 import { toast } from 'react-hot-toast'
 
 interface ComparisonProgressProps {
   comparisonId: string
-  onComplete: () => void
+  onComplete: (result?: any) => void
 }
 
 export function ComparisonProgress({ comparisonId, onComplete }: ComparisonProgressProps) {
@@ -28,16 +28,28 @@ export function ComparisonProgress({ comparisonId, onComplete }: ComparisonProgr
       
       // Check status immediately
       getComparisonStatus(comparisonId)
-        .then(statusResponse => {
+        .then(async statusResponse => {
           console.log('Initial status check:', statusResponse)
           if (statusResponse.status === 'completed') {
             setStatus('completed')
             toast.success('Comparison completed successfully!')
-            setTimeout(() => {
-              if (!isCleanedUp) {
-                onComplete()
-              }
-            }, 1000)
+            
+            // Fetch the comparison result and pass it to onComplete
+            try {
+              const result = await getComparisonResult(comparisonId)
+              setTimeout(() => {
+                if (!isCleanedUp) {
+                  onComplete(result)
+                }
+              }, 1000)
+            } catch (error) {
+              console.error('Failed to fetch comparison result:', error)
+              setTimeout(() => {
+                if (!isCleanedUp) {
+                  onComplete()
+                }
+              }, 1000)
+            }
             return
           }
         })
@@ -55,11 +67,23 @@ export function ComparisonProgress({ comparisonId, onComplete }: ComparisonProgr
             clearInterval(pollInterval!)
             setStatus('completed')
             toast.success('Comparison completed successfully!')
-            setTimeout(() => {
-              if (!isCleanedUp) {
-                onComplete()
-              }
-            }, 1000)
+            
+            // Fetch the comparison result and pass it to onComplete
+            try {
+              const result = await getComparisonResult(comparisonId)
+              setTimeout(() => {
+                if (!isCleanedUp) {
+                  onComplete(result)
+                }
+              }, 1000)
+            } catch (error) {
+              console.error('Failed to fetch comparison result:', error)
+              setTimeout(() => {
+                if (!isCleanedUp) {
+                  onComplete()
+                }
+              }, 1000)
+            }
           } else if (statusResponse.status === 'failed') {
             clearInterval(pollInterval!)
             setStatus('failed')
@@ -82,7 +106,7 @@ export function ComparisonProgress({ comparisonId, onComplete }: ComparisonProgr
           console.log('WebSocket connected')
         }
 
-        ws.onmessage = (event) => {
+        ws.onmessage = async (event) => {
           try {
             const data = JSON.parse(event.data)
             console.log('WebSocket message:', data)
@@ -96,11 +120,23 @@ export function ComparisonProgress({ comparisonId, onComplete }: ComparisonProgr
               }
               setStatus('completed')
               toast.success('Comparison completed successfully!')
-              setTimeout(() => {
-                if (!isCleanedUp) {
-                  onComplete()
-                }
-              }, 1000)
+              
+              // Fetch the comparison result and pass it to onComplete
+              try {
+                const result = await getComparisonResult(comparisonId)
+                setTimeout(() => {
+                  if (!isCleanedUp) {
+                    onComplete(result)
+                  }
+                }, 1000)
+              } catch (error) {
+                console.error('Failed to fetch comparison result via WebSocket:', error)
+                setTimeout(() => {
+                  if (!isCleanedUp) {
+                    onComplete()
+                  }
+                }, 1000)
+              }
             } else if (data.type === 'error') {
               if (pollInterval) {
                 clearInterval(pollInterval)

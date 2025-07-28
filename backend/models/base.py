@@ -93,10 +93,10 @@ class ComparisonOptions(BaseModel):
     compare_columns: bool = True
     compare_indexes: bool = True
     compare_constraints: bool = True
-    compare_procedures: bool = True
-    compare_functions: bool = True
-    compare_views: bool = True
-    compare_triggers: bool = True
+    compare_procedures: bool = False
+    compare_functions: bool = False
+    compare_views: bool = False
+    compare_triggers: bool = False
     compare_events: bool = False
     
     included_schemas: Optional[List[str]] = None

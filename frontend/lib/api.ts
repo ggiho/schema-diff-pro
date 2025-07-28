@@ -78,3 +78,9 @@ export async function runProfile(profileId: string) {
   const response = await api.post(`/profiles/${profileId}/run`)
   return response.data
 }
+
+// Recent comparisons
+export async function getRecentComparisons(limit: number = 10) {
+  const response = await api.get(`/comparison/recent/list?limit=${limit}`)
+  return response.data
+}

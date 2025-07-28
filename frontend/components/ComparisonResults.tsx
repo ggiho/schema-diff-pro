@@ -8,7 +8,7 @@ import { DiffViewer } from './DiffViewer'
 import { SyncScriptViewer } from './SyncScriptViewer'
 import { ResultsSummary } from './ResultsSummary'
 import { DifferencesList } from './DifferencesList'
-import { AlertCircle, Download, FileCode, Home } from 'lucide-react'
+import { AlertCircle, Download, FileCode } from 'lucide-react'
 import { toast } from 'react-hot-toast'
 
 interface ComparisonResultsProps {
@@ -105,10 +105,6 @@ export function ComparisonResults({ comparisonId, onNewComparison }: ComparisonR
           >
             <FileCode className="mr-2 h-4 w-4" />
             {generatingScript ? 'Generating...' : 'Generate Sync Script'}
-          </Button>
-          <Button variant="outline" size="sm" onClick={onNewComparison}>
-            <Home className="mr-2 h-4 w-4" />
-            New Comparison
           </Button>
         </div>
       </div>

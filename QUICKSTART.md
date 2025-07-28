@@ -10,7 +10,6 @@
 ```
 
 This will:
-- Start Redis in Docker
 - Install Python dependencies
 - Install Node.js dependencies  
 - Start both backend and frontend servers
@@ -46,11 +45,6 @@ uvicorn main:app --reload
 cd frontend
 npm install
 npm run dev
-```
-
-#### Terminal 3: Redis
-```bash
-docker run -d -p 6379:6379 redis:7-alpine
 ```
 
 ## 🔧 First-Time Setup
@@ -96,15 +90,6 @@ lsof -ti:3000 | xargs kill -9
 
 # Kill process on port 8000
 lsof -ti:8000 | xargs kill -9
-```
-
-### Redis Connection Error
-```bash
-# Make sure Redis is running
-docker ps | grep redis
-
-# If not, start it
-docker run -d --name redis-schema-diff -p 6379:6379 redis:7-alpine
 ```
 
 ### Module Not Found Errors

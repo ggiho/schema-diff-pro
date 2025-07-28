@@ -9,7 +9,7 @@ Schema Diff Pro is a complete rewrite of the original schema comparison tool, of
 ### 🚀 Performance
 - **10x Faster**: Async operations and parallel processing
 - **Real-time Updates**: WebSocket-based progress tracking
-- **Efficient Caching**: Redis integration for repeated comparisons
+- **Efficient Processing**: Optimized comparison algorithms and connection pooling
 
 ### 🎯 Features
 - **Complete Schema Comparison**: Not just indexes, but tables, columns, constraints, procedures, views, and more
@@ -146,7 +146,7 @@ comparison_id = response.json()['comparison_id']
 ### Issue: Performance concerns
 **Solution**: The new tool is significantly faster. If you experience issues, check:
 - Database connection pool settings
-- Redis cache configuration
+- Connection pool configuration
 - Network connectivity
 
 ## Support

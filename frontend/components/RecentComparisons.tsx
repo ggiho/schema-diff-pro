@@ -3,45 +3,55 @@
 import { useState, useEffect } from 'react'
 import { Clock, Database } from 'lucide-react'
 import { formatDistanceToNow } from 'date-fns'
+import { getRecentComparisons } from '@/lib/api'
+import { toast } from 'react-hot-toast'
 
 interface RecentComparison {
   id: string
-  source: string
-  target: string
-  timestamp: Date
-  differenceCount: number
+  source: {
+    display_name: string
+  }
+  target: {
+    display_name: string
+  }
+  timestamp: string
+  difference_count: number
 }
 
 export function RecentComparisons() {
   const [recentComparisons, setRecentComparisons] = useState<RecentComparison[]>([])
+  const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    // In a real app, this would fetch from localStorage or API
-    const mockData: RecentComparison[] = [
-      {
-        id: '1',
-        source: 'dev.mysql.com',
-        target: 'prod.mysql.com',
-        timestamp: new Date(Date.now() - 3600000), // 1 hour ago
-        differenceCount: 47,
-      },
-      {
-        id: '2',
-        source: 'dev.mysql.com',
-        target: 'staging.mysql.com',
-        timestamp: new Date(Date.now() - 86400000), // 1 day ago
-        differenceCount: 12,
-      },
-      {
-        id: '3',
-        source: 'staging.mysql.com',
-        target: 'prod.mysql.com',
-        timestamp: new Date(Date.now() - 172800000), // 2 days ago
-        differenceCount: 3,
-      },
-    ]
-    setRecentComparisons(mockData)
+    fetchRecentComparisons()
   }, [])
+
+  const fetchRecentComparisons = async () => {
+    try {
+      const data = await getRecentComparisons(5)
+      setRecentComparisons(data)
+    } catch (error) {
+      console.error('Failed to fetch recent comparisons:', error)
+      // Don't show error toast if it's just that there's no history yet
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  if (loading) {
+    return (
+      <div className="rounded-lg border bg-card p-6">
+        <div className="animate-pulse">
+          <div className="h-6 bg-muted rounded w-1/3 mb-4"></div>
+          <div className="space-y-3">
+            {[1, 2, 3].map((i) => (
+              <div key={i} className="h-20 bg-muted rounded"></div>
+            ))}
+          </div>
+        </div>
+      </div>
+    )
+  }
 
   if (recentComparisons.length === 0) {
     return null
@@ -64,16 +74,16 @@ export function RecentComparisons() {
               <Database className="h-4 w-4 text-muted-foreground" />
               <div>
                 <p className="text-sm font-medium">
-                  {comparison.source} → {comparison.target}
+                  {comparison.source.display_name} → {comparison.target.display_name}
                 </p>
                 <p className="text-xs text-muted-foreground">
-                  {formatDistanceToNow(comparison.timestamp, { addSuffix: true })}
+                  {formatDistanceToNow(new Date(comparison.timestamp), { addSuffix: true })}
                 </p>
               </div>
             </div>
             
             <div className="text-right">
-              <p className="text-2xl font-bold">{comparison.differenceCount}</p>
+              <p className="text-2xl font-bold">{comparison.difference_count}</p>
               <p className="text-xs text-muted-foreground">differences</p>
             </div>
           </div>

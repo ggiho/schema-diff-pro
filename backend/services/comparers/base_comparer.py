@@ -147,15 +147,28 @@ class BaseComparer(ABC):
             (DiffType.TABLE_MISSING_SOURCE, DiffType.TABLE_MISSING_TARGET)
         )
         
+        # Parse composite key to extract schema, table, and sub-object names
+        schema_name = obj_data.get("schema_name")
+        table_name = obj_data.get("table_name")
+        sub_object_name = None
+        
+        # For constraints and indexes, extract the actual name from obj_data
+        if self.object_type in [ObjectType.CONSTRAINT, ObjectType.INDEX]:
+            if self.object_type == ObjectType.CONSTRAINT:
+                sub_object_name = obj_data.get("constraint_name")
+            elif self.object_type == ObjectType.INDEX:
+                sub_object_name = obj_data.get("index_name")
+        
         return Difference(
             diff_type=source_type if missing_in == "source" else target_type,
             severity=SeverityLevel.HIGH,
             object_type=self.object_type,
-            schema_name=obj_data.get("schema_name"),
-            object_name=obj_name,
+            schema_name=schema_name,
+            object_name=table_name,
+            sub_object_name=sub_object_name,
             source_value=None if missing_in == "source" else obj_data,
             target_value=obj_data if missing_in == "source" else None,
-            description=f"{self.object_type.value.capitalize()} '{obj_name}' exists only in {'target' if missing_in == 'source' else 'source'} database",
+            description=f"{self.object_type.value.capitalize()} '{sub_object_name or obj_name}' exists only in {'target' if missing_in == 'source' else 'source'} database",
             can_auto_fix=True,
             fix_order=self.get_fix_order()
         )

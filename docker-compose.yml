@@ -4,10 +4,7 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - REDIS_URL=redis://redis:6379
       - SECRET_KEY=your-secret-key-here-change-in-production
-    depends_on:
-      - redis
     volumes:
       - ./backend:/app
     command: uvicorn main:app --reload --host 0.0.0.0 --port 8000
@@ -26,13 +23,6 @@ services:
       - /app/.next
     depends_on:
       - backend
-
-  redis:
-    image: redis:7-alpine
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis_data:/data
 
   # Optional: MySQL instances for testing
   mysql_source:
@@ -56,6 +46,5 @@ services:
       - mysql_target_data:/var/lib/mysql
 
 volumes:
-  redis_data:
   mysql_source_data:
   mysql_target_data:
