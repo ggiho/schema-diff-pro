@@ -256,15 +256,22 @@ export function DifferenceDetail({ difference }: DifferenceDetailProps) {
         
       case DiffType.COLUMN_NULLABLE_CHANGED:
         if (difference.target_value !== undefined) {
-          // Get column type from metadata or make a reasonable assumption
+          // Get column type from target_value (now contains full column info)
           let columnType = 'VARCHAR(255)' // default fallback
-          if (difference.metadata && difference.metadata.column_type) {
-            columnType = difference.metadata.column_type
-          } else if (difference.source_value && typeof difference.source_value === 'object' && difference.source_value.column_type) {
+          if (typeof difference.target_value === 'object' && difference.target_value.column_type) {
+            columnType = difference.target_value.column_type
+          } else if (typeof difference.source_value === 'object' && difference.source_value.column_type) {
             columnType = difference.source_value.column_type
           }
           
-          const nullable = difference.target_value ? 'NULL' : 'NOT NULL'
+          // Get nullable state from target_value
+          let nullable = 'NULL'
+          if (typeof difference.target_value === 'object') {
+            nullable = difference.target_value.is_nullable ? 'NULL' : 'NOT NULL'
+          } else {
+            nullable = difference.target_value ? 'NULL' : 'NOT NULL'
+          }
+          
           return `-- Execute on SOURCE database:\nALTER TABLE ${tableName} MODIFY COLUMN ${columnName} ${columnType} ${nullable};`
         }
         return `-- Unable to determine target nullable state`
@@ -321,9 +328,17 @@ export function DifferenceDetail({ difference }: DifferenceDetailProps) {
           } else if (constraintType === 'UNIQUE') {
             const columns = const_data.columns || 'column_name'
             return `ALTER TABLE ${tableName} ADD CONSTRAINT ${columnName} UNIQUE (${columns});`
+          } else if (constraintType === 'CHECK') {
+            const columns = const_data.columns || 'column_name'
+            const checkClause = const_data.check_clause || 'CHECK_CONDITION'
+            return `ALTER TABLE ${tableName} ADD CONSTRAINT ${columnName} CHECK (${checkClause});`
+          } else {
+            // Show available constraint info for unknown types
+            const columns = const_data.columns || 'column_name'
+            return `ALTER TABLE ${tableName} ADD CONSTRAINT ${columnName} ${constraintType} (${columns});`
           }
         }
-        return `ALTER TABLE ${tableName} ADD CONSTRAINT ${columnName} ...;`
+        return `-- Unable to generate constraint definition - missing constraint data`
         
       case DiffType.CONSTRAINT_MISSING_SOURCE:
         return `ALTER TABLE ${tableName} DROP CONSTRAINT ${columnName};`
@@ -416,15 +431,22 @@ export function DifferenceDetail({ difference }: DifferenceDetailProps) {
         
       case DiffType.COLUMN_NULLABLE_CHANGED:
         if (difference.source_value !== undefined) {
-          // Get column type from metadata or make a reasonable assumption
+          // Get column type from source_value (now contains full column info)
           let columnType = 'VARCHAR(255)' // default fallback
-          if (difference.metadata && difference.metadata.column_type) {
-            columnType = difference.metadata.column_type
-          } else if (difference.target_value && typeof difference.target_value === 'object' && difference.target_value.column_type) {
+          if (typeof difference.source_value === 'object' && difference.source_value.column_type) {
+            columnType = difference.source_value.column_type
+          } else if (typeof difference.target_value === 'object' && difference.target_value.column_type) {
             columnType = difference.target_value.column_type
           }
           
-          const nullable = difference.source_value ? 'NULL' : 'NOT NULL'
+          // Get nullable state from source_value
+          let nullable = 'NULL'
+          if (typeof difference.source_value === 'object') {
+            nullable = difference.source_value.is_nullable ? 'NULL' : 'NOT NULL'
+          } else {
+            nullable = difference.source_value ? 'NULL' : 'NOT NULL'
+          }
+          
           return `-- Execute on TARGET database:\nALTER TABLE ${tableName} MODIFY COLUMN ${columnName} ${columnType} ${nullable};`
         }
         return `-- Unable to determine source nullable state`
@@ -484,9 +506,17 @@ export function DifferenceDetail({ difference }: DifferenceDetailProps) {
           } else if (constraintType === 'UNIQUE') {
             const columns = const_data.columns || 'column_name'
             return `ALTER TABLE ${tableName} ADD CONSTRAINT ${columnName} UNIQUE (${columns});`
+          } else if (constraintType === 'CHECK') {
+            const columns = const_data.columns || 'column_name'
+            const checkClause = const_data.check_clause || 'CHECK_CONDITION'
+            return `ALTER TABLE ${tableName} ADD CONSTRAINT ${columnName} CHECK (${checkClause});`
+          } else {
+            // Show available constraint info for unknown types
+            const columns = const_data.columns || 'column_name'
+            return `ALTER TABLE ${tableName} ADD CONSTRAINT ${columnName} ${constraintType} (${columns});`
           }
         }
-        return `-- ADD CONSTRAINT ${columnName} with original definition;`
+        return `-- Unable to generate constraint definition - missing constraint data`
         
       case DiffType.TABLE_MISSING_TARGET:
         // Source Only: Option 2 = Add to Target

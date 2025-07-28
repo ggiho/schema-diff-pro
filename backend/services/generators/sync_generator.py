@@ -249,26 +249,40 @@ ALTER TABLE {table_name} MODIFY COLUMN {column_name} {source_type};"""
         table_name = f"`{diff.schema_name}`.`{diff.object_name}`"
         column_name = f"`{diff.sub_object_name}`"
         
-        # Try to get column type from metadata if available
-        column_type = "VARCHAR(255)"  # Default
-        if hasattr(diff, 'metadata') and diff.metadata:
-            if isinstance(diff.metadata, dict):
-                column_type = diff.metadata.get("column_type", column_type)
+        # Get column type from target_value or source_value (now contains full column info)
+        column_type = "VARCHAR(255)"  # Default fallback
+        if isinstance(diff.target_value, dict) and diff.target_value.get("column_type"):
+            column_type = diff.target_value["column_type"]
+        elif isinstance(diff.source_value, dict) and diff.source_value.get("column_type"):
+            column_type = diff.source_value["column_type"]
         
-        # Determine the nullable state
-        target_nullable = diff.target_value
-        source_nullable = diff.source_value
+        # Determine the nullable state from the column objects
+        target_nullable = None
+        source_nullable = None
         
-        if isinstance(target_nullable, bool):
-            target_nullable = "NULL" if target_nullable else "NOT NULL"
-        if isinstance(source_nullable, bool):
-            source_nullable = "NULL" if source_nullable else "NOT NULL"
+        if isinstance(diff.target_value, dict):
+            target_nullable = "NULL" if diff.target_value.get("is_nullable") else "NOT NULL"
+        elif isinstance(diff.target_value, str):
+            target_nullable = diff.target_value
         
-        if target_nullable == "NOT NULL" or target_nullable == False:
-            forward = f"ALTER TABLE {table_name} MODIFY COLUMN {column_name} {column_type} NOT NULL;"
+        if isinstance(diff.source_value, dict):
+            source_nullable = "NULL" if diff.source_value.get("is_nullable") else "NOT NULL"
+        elif isinstance(diff.source_value, str):
+            source_nullable = diff.source_value
+        
+        # Generate SQL based on target nullable state
+        if target_nullable == "NOT NULL":
+            forward = f"""-- Modify Column Nullable: {column_name}
+-- From: {source_nullable}
+-- To: {target_nullable}
+-- WARNING: Ensure no NULL values exist in column
+ALTER TABLE {table_name} MODIFY COLUMN {column_name} {column_type} NOT NULL;"""
             rollback = f"ALTER TABLE {table_name} MODIFY COLUMN {column_name} {column_type} NULL;"
         else:
-            forward = f"ALTER TABLE {table_name} MODIFY COLUMN {column_name} {column_type} NULL;"
+            forward = f"""-- Modify Column Nullable: {column_name}
+-- From: {source_nullable}
+-- To: {target_nullable}
+ALTER TABLE {table_name} MODIFY COLUMN {column_name} {column_type} NULL;"""
             rollback = f"ALTER TABLE {table_name} MODIFY COLUMN {column_name} {column_type} NOT NULL;"
         
         return forward, rollback

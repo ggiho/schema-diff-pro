@@ -226,8 +226,8 @@ class TableComparer(BaseComparer):
                 schema_name=schema_name,
                 object_name=table_name,
                 sub_object_name=column_name,
-                source_value="NULL" if source_col["is_nullable"] else "NOT NULL",
-                target_value="NULL" if target_col["is_nullable"] else "NOT NULL",
+                source_value=source_col,  # Pass full column info
+                target_value=target_col,  # Pass full column info
                 description=f"Column nullable constraint changed",
                 can_auto_fix=True,
                 fix_order=self.get_fix_order() + 1,

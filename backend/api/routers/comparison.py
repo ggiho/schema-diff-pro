@@ -32,6 +32,18 @@ async def start_comparison(
     if not options:
         options = ComparisonOptions()
     
+    # If database is specified in config, limit comparison to that schema only
+    included_schemas = []
+    if source_config.database:
+        included_schemas.append(source_config.database)
+    if target_config.database and target_config.database not in included_schemas:
+        included_schemas.append(target_config.database)
+    
+    # Override included_schemas if database is specified
+    if included_schemas:
+        options.included_schemas = included_schemas
+        logger.info(f"Limiting comparison to schemas: {included_schemas}")
+    
     engine = ComparisonEngine()
     
     # Create a task to run the comparison
