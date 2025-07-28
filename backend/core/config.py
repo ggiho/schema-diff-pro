@@ -9,9 +9,6 @@ class Settings(BaseSettings):
     PROJECT_NAME: str = "Schema Diff Pro"
     VERSION: str = "1.0.0"
     
-    # Security
-    SECRET_KEY: str = os.getenv("SECRET_KEY", "your-secret-key-here-change-in-production")
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7  # 7 days
     
     # Database
     DATABASE_POOL_SIZE: int = 20

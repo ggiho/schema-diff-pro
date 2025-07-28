@@ -3,8 +3,6 @@ services:
     build: ./backend
     ports:
       - "8000:8000"
-    environment:
-      - SECRET_KEY=your-secret-key-here-change-in-production
     volumes:
       - ./backend:/app
     command: uvicorn main:app --reload --host 0.0.0.0 --port 8000

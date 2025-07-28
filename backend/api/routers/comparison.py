@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-# In-memory storage for results (in production, use Redis or database)
+# In-memory storage for results (using JSON file storage for persistence)
 comparison_results: Dict[str, ComparisonResult] = {}
 history_manager = HistoryManager()
 

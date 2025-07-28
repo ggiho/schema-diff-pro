@@ -83,9 +83,6 @@ npm run dev
 ### Backend Configuration (.env)
 
 ```env
-# Security
-SECRET_KEY=your-secret-key-here
-
 # Database Connection Pool
 DATABASE_POOL_SIZE=20
 DATABASE_MAX_OVERFLOW=10
@@ -191,7 +188,6 @@ docker-compose -f docker-compose.prod.yml up -d
 ### Environment Variables
 
 Ensure all production environment variables are properly set:
-- Use strong SECRET_KEY
 - Configure proper CORS origins
 - Configure connection pooling
 - Configure database connection pools
