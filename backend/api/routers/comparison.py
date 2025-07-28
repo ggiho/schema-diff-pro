@@ -1,0 +1,143 @@
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Depends
+from typing import Optional, Dict, Any
+import asyncio
+import logging
+
+from models.base import (
+    DatabaseConfig, ComparisonOptions, ComparisonResult,
+    ComparisonProgress
+)
+from services.comparison_engine import ComparisonEngine
+from core.config import settings
+from api.websockets.comparison_ws import ConnectionManager
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter()
+
+# In-memory storage for results (in production, use Redis or database)
+comparison_results: Dict[str, ComparisonResult] = {}
+
+
+@router.post("/compare")
+async def start_comparison(
+    source_config: DatabaseConfig,
+    target_config: DatabaseConfig,
+    options: Optional[ComparisonOptions] = None,
+    background_tasks: BackgroundTasks = BackgroundTasks()
+) -> Dict[str, str]:
+    """Start a new database comparison"""
+    if not options:
+        options = ComparisonOptions()
+    
+    engine = ComparisonEngine()
+    
+    # Create a task to run the comparison
+    async def run_comparison(comparison_id: str):
+        try:
+            # Get WebSocket manager from app state
+            from main import manager
+            
+            result = None
+            async for update in engine.compare_databases(source_config, target_config, options):
+                if isinstance(update, ComparisonProgress):
+                    # Send progress via WebSocket
+                    await manager.send_progress(comparison_id, update.dict())
+                else:
+                    # Final result
+                    result = update
+            
+            if result:
+                # Store result
+                comparison_results[comparison_id] = result
+                
+                # Send completion via WebSocket
+                await manager.send_complete(
+                    comparison_id,
+                    f"/api/v1/comparison/{comparison_id}/result"
+                )
+        
+        except Exception as e:
+            logger.error(f"Comparison failed: {str(e)}")
+            await manager.send_error(comparison_id, str(e))
+    
+    # Generate comparison ID from the result generator
+    # This is a bit hacky but works for the example
+    comparison_id = None
+    
+    # Start the comparison in background
+    async def start_comparison_task():
+        nonlocal comparison_id
+        async for update in engine.compare_databases(source_config, target_config, options):
+            if isinstance(update, ComparisonProgress):
+                comparison_id = update.comparison_id
+                break
+        
+        if comparison_id:
+            task = asyncio.create_task(run_comparison(comparison_id))
+            from main import manager
+            manager.register_task(comparison_id, task)
+    
+    await start_comparison_task()
+    
+    if not comparison_id:
+        raise HTTPException(status_code=500, detail="Failed to start comparison")
+    
+    return {
+        "comparison_id": comparison_id,
+        "status": "started",
+        "websocket_url": f"/ws/comparison/{comparison_id}"
+    }
+
+
+@router.get("/{comparison_id}/result")
+async def get_comparison_result(comparison_id: str) -> ComparisonResult:
+    """Get comparison result"""
+    if comparison_id not in comparison_results:
+        raise HTTPException(status_code=404, detail="Comparison not found")
+    
+    return comparison_results[comparison_id]
+
+
+@router.get("/{comparison_id}/status")
+async def get_comparison_status(comparison_id: str) -> Dict[str, Any]:
+    """Get comparison status"""
+    if comparison_id in comparison_results:
+        return {
+            "status": "completed",
+            "result_available": True
+        }
+    
+    # Check if task is running
+    from main import manager
+    if comparison_id in manager.comparison_tasks:
+        task = manager.comparison_tasks[comparison_id]
+        if task.done():
+            return {
+                "status": "failed" if task.exception() else "completed",
+                "result_available": comparison_id in comparison_results
+            }
+        else:
+            return {
+                "status": "running",
+                "result_available": False
+            }
+    
+    return {
+        "status": "not_found",
+        "result_available": False
+    }
+
+
+@router.delete("/{comparison_id}")
+async def cancel_comparison(comparison_id: str) -> Dict[str, str]:
+    """Cancel a running comparison"""
+    from main import manager
+    
+    if comparison_id in manager.comparison_tasks:
+        task = manager.comparison_tasks[comparison_id]
+        if not task.done():
+            task.cancel()
+            return {"status": "cancelled"}
+    
+    return {"status": "not_found"}
