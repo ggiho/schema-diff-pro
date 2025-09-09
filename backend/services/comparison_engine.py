@@ -3,6 +3,8 @@ import uuid
 from typing import List, Dict, Any, AsyncGenerator
 from datetime import datetime
 import logging
+import time
+from sqlalchemy.exc import OperationalError
 
 from models.base import (
     ComparisonResult, ComparisonProgress, ComparisonOptions,
@@ -25,6 +27,44 @@ class ComparisonEngine:
             ObjectType.INDEX: IndexComparer,
             ObjectType.CONSTRAINT: ConstraintComparer,
         }
+        self.max_retries = 3
+        self.retry_delay = 2  # seconds
+    
+    async def _execute_with_retry(self, operation, operation_name: str):
+        """Execute operation with retry logic for database connection issues"""
+        last_exception = None
+        
+        for attempt in range(self.max_retries):
+            try:
+                return await operation()
+            except (OperationalError, Exception) as e:
+                last_exception = e
+                error_str = str(e).lower()
+                
+                # Check if this is a connection-related error that we should retry
+                connection_errors = [
+                    'lost connection to mysql server',
+                    'mysql server has gone away',
+                    'connection timeout',
+                    'broken pipe',
+                    'connection refused'
+                ]
+                
+                is_connection_error = any(error in error_str for error in connection_errors)
+                
+                if is_connection_error and attempt < self.max_retries - 1:
+                    wait_time = self.retry_delay * (2 ** attempt)  # Exponential backoff
+                    logger.warning(f"{operation_name} failed (attempt {attempt + 1}/{self.max_retries}): {e}")
+                    logger.info(f"Retrying in {wait_time} seconds...")
+                    await asyncio.sleep(wait_time)
+                    continue
+                else:
+                    # Either not a connection error or final attempt
+                    logger.error(f"{operation_name} failed after {attempt + 1} attempts: {e}")
+                    raise
+        
+        # This should never be reached, but just in case
+        raise last_exception
     
     async def compare_databases(
         self,
@@ -60,7 +100,7 @@ class ComparisonEngine:
             total_phases = len(active_comparers)
             current_phase = 0
             
-            # Run each comparer
+            # Run each comparer with retry logic
             for object_type, comparer_class in active_comparers:
                 current_phase += 1
                 
@@ -72,18 +112,45 @@ class ComparisonEngine:
                     message=f"Comparing {object_type.value}s"
                 )
                 
-                comparer = comparer_class(
-                    source_conn,
-                    target_conn,
-                    options,
-                    comparison_id
-                )
+                # Execute comparer with retry mechanism
+                async def run_comparer():
+                    comparer = comparer_class(
+                        source_conn,
+                        target_conn,
+                        options,
+                        comparison_id
+                    )
+                    
+                    # Collect progress and differences
+                    progress_list = []
+                    async for progress in comparer.compare():
+                        progress_list.append(progress)
+                    
+                    return comparer, progress_list
                 
-                # Stream progress from comparer
-                async for progress in comparer.compare():
-                    yield progress
-                
-                all_differences.extend(comparer.differences)
+                try:
+                    comparer, progress_list = await self._execute_with_retry(
+                        run_comparer,
+                        f"Comparing {object_type.value}s"
+                    )
+                    
+                    # Yield collected progress
+                    for progress in progress_list:
+                        yield progress
+                    
+                    all_differences.extend(comparer.differences)
+                    
+                except Exception as e:
+                    # If all retries failed, yield error progress and continue with next comparer
+                    yield ComparisonProgress(
+                        comparison_id=comparison_id,
+                        phase="comparison",  # Use valid phase, indicate error in message
+                        current=current_phase,
+                        total=total_phases,
+                        message=f"ERROR: Failed to compare {object_type.value}s after retries: {str(e)}"
+                    )
+                    logger.error(f"Comparer {object_type.value} failed completely: {e}")
+                    # Continue with next comparer instead of failing the entire comparison
             
             # Analysis phase
             yield ComparisonProgress(

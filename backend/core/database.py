@@ -32,15 +32,38 @@ class DatabaseConnection:
             # Replace mysql+pymysql with mysql+aiomysql for async
             url = url.replace("mysql+pymysql://", "mysql+aiomysql://")
             
+            # Check if this is a tunnel connection (localhost/127.0.0.1)
+            is_tunnel = "127.0.0.1" in url or "localhost" in url
+            
+            # Adjust settings for SSH tunnel connections
+            if is_tunnel:
+                # More conservative settings for SSH tunnels
+                pool_size = min(5, settings.DATABASE_POOL_SIZE)
+                pool_recycle = 1800  # 30 minutes instead of 1 hour
+                pool_timeout = 60   # Longer timeout for tunnel connections
+            else:
+                pool_size = settings.DATABASE_POOL_SIZE
+                pool_recycle = settings.DATABASE_POOL_RECYCLE
+                pool_timeout = settings.DATABASE_POOL_TIMEOUT
+            
             self._engine = create_async_engine(
                 url,
                 poolclass=QueuePool,
-                pool_size=settings.DATABASE_POOL_SIZE,
+                pool_size=pool_size,
                 max_overflow=settings.DATABASE_MAX_OVERFLOW,
-                pool_timeout=settings.DATABASE_POOL_TIMEOUT,
-                pool_recycle=settings.DATABASE_POOL_RECYCLE,
+                pool_timeout=pool_timeout,
+                pool_recycle=pool_recycle,
                 pool_pre_ping=True,
-                echo=False
+                echo=False,
+                # Additional MySQL-specific settings for stability  
+                connect_args={
+                    "charset": "utf8mb4",
+                    "autocommit": False,
+                    "connect_timeout": 60 if is_tunnel else 30,
+                    # Enable keepalive for tunneled connections
+                    "init_command": "SET SESSION wait_timeout=28800, interactive_timeout=28800" if is_tunnel else None,
+                    # aiomysql doesn't support read_timeout/write_timeout in connect_args
+                }
             )
         
         return self._engine

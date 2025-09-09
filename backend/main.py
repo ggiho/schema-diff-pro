@@ -6,8 +6,9 @@ import uvicorn
 
 from core.config import settings
 from core.database import connection_pool
-from api.routers import comparison, profiles, sync, database
+from api.routers import comparison, profiles, sync, database, ssh
 from api.websockets.comparison_ws import ConnectionManager
+from services.ssh_tunnel_manager import tunnel_manager
 
 # Configure logging
 logging.basicConfig(
@@ -23,12 +24,23 @@ async def lifespan(app: FastAPI):
     """Manage application lifecycle"""
     # Startup
     logger.info("Starting Schema Diff Pro...")
+    logger.info("SSH tunnel manager initialized")
     
     yield
     
     # Shutdown
     logger.info("Shutting down Schema Diff Pro...")
-    await connection_pool.close_all()
+    try:
+        await tunnel_manager.shutdown()
+    except Exception as e:
+        logger.error(f"Error during SSH tunnel manager shutdown: {e}")
+    
+    try:
+        await connection_pool.close_all()
+    except Exception as e:
+        logger.error(f"Error during connection pool cleanup: {e}")
+    
+    logger.info("Shutdown complete")
 
 
 # Create FastAPI app
@@ -55,6 +67,7 @@ app.include_router(comparison.router, prefix=f"{settings.API_V1_STR}/comparison"
 app.include_router(profiles.router, prefix=f"{settings.API_V1_STR}/profiles", tags=["profiles"])
 app.include_router(sync.router, prefix=f"{settings.API_V1_STR}/sync", tags=["sync"])
 app.include_router(database.router, prefix=f"{settings.API_V1_STR}/database", tags=["database"])
+app.include_router(ssh.router, prefix=f"{settings.API_V1_STR}/ssh", tags=["ssh"])
 
 
 @app.get("/")

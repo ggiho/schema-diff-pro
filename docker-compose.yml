@@ -5,7 +5,24 @@ services:
       - "8000:8000"
     volumes:
       - ./backend:/app
+    environment:
+      - DOCKER_ENV=true
+      - ENVIRONMENT=docker
     command: uvicorn main:app --reload --host 0.0.0.0 --port 8000
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    
+  # SSH proxy service with mapped port
+  ssh-proxy:
+    image: python:3.11-slim
+    ports:
+      - "9999:9999"
+    volumes:
+      - ./ssh_proxy.py:/ssh_proxy.py:ro
+    command: sh -c "apt-get update && apt-get install -y openssh-client && python /ssh_proxy.py"
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
   frontend:
     build:
@@ -14,7 +31,10 @@ services:
     ports:
       - "3000:3000"
     environment:
-      - NEXT_PUBLIC_API_URL=http://localhost:8000/api/v1
+      - DOCKER_ENV=true
+      - ENVIRONMENT=docker
+      - NODE_ENV=development
+      # Note: API URL will be dynamically set by next.config.js based on DOCKER_ENV
     volumes:
       - ./frontend:/app
       - /app/node_modules
@@ -23,26 +43,27 @@ services:
       - backend
 
   # Optional: MySQL instances for testing
-  mysql_source:
-    image: mysql:8.0
-    environment:
-      MYSQL_ROOT_PASSWORD: rootpassword
-      MYSQL_DATABASE: testdb
-    ports:
-      - "3306:3306"
-    volumes:
-      - mysql_source_data:/var/lib/mysql
+#   mysql_source:
+#     image: mysql:8.0
+#     environment:
+#       MYSQL_ROOT_PASSWORD: rootpassword
+#       MYSQL_DATABASE: testdb
+#     ports:
+#       - "3306:3306"
+#     volumes:
+#       - mysql_source_data:/var/lib/mysql
+#
+#   mysql_target:
+#     image: mysql:8.0
+#     environment:
+#       MYSQL_ROOT_PASSWORD: rootpassword
+#       MYSQL_DATABASE: testdb
+#     ports:
+#       - "3307:3306"
+#     volumes:
+#       - mysql_target_data:/var/lib/mysql
+#
+# volumes:
+#   mysql_source_data:
+#   mysql_target_data:
 
-  mysql_target:
-    image: mysql:8.0
-    environment:
-      MYSQL_ROOT_PASSWORD: rootpassword
-      MYSQL_DATABASE: testdb
-    ports:
-      - "3307:3306"
-    volumes:
-      - mysql_target_data:/var/lib/mysql
-
-volumes:
-  mysql_source_data:
-  mysql_target_data:

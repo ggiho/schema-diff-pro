@@ -6,6 +6,105 @@ export interface DatabaseConfig {
   database?: string
 }
 
+// SSH Tunnel Types
+export enum SSHAuthMethod {
+  PASSWORD = "password",
+  PRIVATE_KEY = "private_key", 
+  SSH_AGENT = "ssh_agent",
+}
+
+export enum TunnelStatus {
+  DISCONNECTED = "disconnected",
+  CONNECTING = "connecting",
+  CONNECTED = "connected",
+  FAILED = "failed",
+  TIMEOUT = "timeout",
+}
+
+export enum SSHKeyType {
+  RSA = "rsa",
+  ED25519 = "ed25519",
+  ECDSA = "ecdsa",
+  DSA = "dsa",
+}
+
+export interface SSHTunnelConfig {
+  enabled: boolean
+  ssh_host: string
+  ssh_port: number
+  ssh_user: string
+  auth_method: SSHAuthMethod
+  ssh_password?: string
+  private_key_path?: string
+  private_key_content?: string
+  private_key_passphrase?: string
+  key_type?: SSHKeyType
+  local_bind_port?: number
+  remote_bind_host: string
+  remote_bind_port: number
+  connect_timeout: number
+  keepalive_interval: number
+  compression: boolean
+  strict_host_key_checking: boolean
+  known_hosts_path?: string
+}
+
+export interface DatabaseConfigWithSSH extends DatabaseConfig {
+  ssh_tunnel?: SSHTunnelConfig
+}
+
+export interface SSHConnectionInfo {
+  tunnel_id: string
+  config: SSHTunnelConfig
+  status: TunnelStatus
+  local_port?: number
+  connected_at?: string
+  last_activity?: string
+  bytes_sent: number
+  bytes_received: number
+  connections_count: number
+  last_error?: string
+  error_count: number
+  reconnect_attempts: number
+  connection_latency_ms?: number
+  tunnel_latency_ms?: number
+}
+
+export interface SSHTunnelTest {
+  config: SSHTunnelConfig
+  test_database_connection: boolean
+  timeout_seconds: number
+}
+
+export interface SSHTunnelTestResult {
+  success: boolean
+  tunnel_status: TunnelStatus
+  local_port?: number
+  ssh_connection_success: boolean
+  ssh_connection_time_ms?: number
+  database_connection_success: boolean
+  database_connection_time_ms?: number
+  errors: string[]
+  warnings: string[]
+  total_test_time_ms: number
+  tunnel_latency_ms?: number
+  ssh_server_info?: Record<string, any>
+  database_server_info?: Record<string, any>
+}
+
+export interface SSHKeyInfo {
+  key_path?: string
+  key_content?: string
+  key_type?: SSHKeyType
+  is_valid: boolean
+  is_encrypted: boolean
+  fingerprint?: string
+  key_size?: number
+  comment?: string
+  created_at?: string
+  validation_errors: string[]
+}
+
 export interface ComparisonOptions {
   compare_tables: boolean
   compare_columns: boolean
