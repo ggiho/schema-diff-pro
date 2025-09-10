@@ -1,11 +1,14 @@
 from pydantic import BaseModel, Field
-from typing import Optional, List, Dict, Any, Literal, TYPE_CHECKING
+from typing import Optional, List, Dict, Any, Literal, TYPE_CHECKING, Union
 from datetime import datetime
 from enum import Enum
 
-# Import SSH models only for type checking to avoid circular imports
-if TYPE_CHECKING:
-    from .ssh_tunnel import SSHTunnelConfig
+# Import SSH models
+try:
+    from .ssh_tunnel import DatabaseConfigWithSSH
+except ImportError:
+    # Fallback for when ssh_tunnel is not available
+    DatabaseConfigWithSSH = DatabaseConfig
 
 
 class DiffType(str, Enum):
@@ -91,68 +94,6 @@ class DatabaseConfig(BaseModel):
         return f"mysql+pymysql://{self.user}:{self.password}@{self.host}:{self.port}/{db}"
 
 
-class DatabaseConfigWithSSH(DatabaseConfig):
-    """Enhanced database configuration with SSH tunnel support"""
-    # SSH tunnel configuration (imported from ssh_tunnel module)
-    ssh_tunnel: Optional['SSHTunnelConfig'] = None
-    
-    def get_effective_connection_params(self) -> Dict[str, Any]:
-        """Get actual connection parameters (with tunnel if enabled)"""
-        if self.ssh_tunnel and self.ssh_tunnel.enabled:
-            # Use localhost with tunnel port when SSH tunnel is active
-            return {
-                "host": "127.0.0.1",
-                "port": self.ssh_tunnel.local_bind_port or 3306,
-                "user": self.user,
-                "password": self.password,
-                "database": self.database
-            }
-        else:
-            # Direct connection
-            return {
-                "host": self.host,
-                "port": self.port,
-                "user": self.user,
-                "password": self.password,
-                "database": self.database
-            }
-    
-    def get_connection_url(self, database: Optional[str] = None, use_tunnel: bool = None) -> str:
-        """Generate connection URL (with tunnel if enabled)"""
-        if use_tunnel is None:
-            use_tunnel = self.ssh_tunnel and self.ssh_tunnel.enabled
-            
-        if use_tunnel and self.ssh_tunnel:
-            # Use tunnel connection
-            host = "127.0.0.1"
-            port = self.ssh_tunnel.local_bind_port or 3306
-        else:
-            # Direct connection  
-            host = self.host
-            port = self.port
-            
-        db = database or self.database or ""
-        return f"mysql+pymysql://{self.user}:{self.password}@{host}:{port}/{db}"
-    
-    def has_ssh_tunnel(self) -> bool:
-        """Check if SSH tunnel is configured and enabled"""
-        return self.ssh_tunnel is not None and self.ssh_tunnel.enabled
-    
-    def get_display_config(self) -> Dict[str, Any]:
-        """Get configuration for display (with sensitive data masked)"""
-        config = {
-            "host": self.host,
-            "port": self.port,
-            "user": self.user,
-            "password": "***masked***",
-            "database": self.database,
-            "ssh_tunnel_enabled": self.has_ssh_tunnel()
-        }
-        
-        if self.has_ssh_tunnel():
-            config["ssh_config"] = self.ssh_tunnel.get_masked_config()
-        
-        return config
 
 
 class ComparisonOptions(BaseModel):
@@ -201,7 +142,7 @@ class Difference(BaseModel):
 class ComparisonProgress(BaseModel):
     """Real-time progress update"""
     comparison_id: str
-    phase: Literal["discovery", "comparison", "analysis", "report"]
+    phase: Literal["discovery", "comparison", "analysis", "report", "error"]
     current: int
     total: int
     current_object: Optional[str] = None
@@ -214,8 +155,8 @@ class ComparisonResult(BaseModel):
     comparison_id: str
     started_at: datetime
     completed_at: Optional[datetime] = None
-    source_config: DatabaseConfig
-    target_config: DatabaseConfig
+    source_config: Union[DatabaseConfig, DatabaseConfigWithSSH]
+    target_config: Union[DatabaseConfig, DatabaseConfigWithSSH]
     options: ComparisonOptions
     
     differences: List[Difference]
@@ -235,8 +176,8 @@ class ComparisonProfile(BaseModel):
     id: Optional[str] = None
     name: str
     description: Optional[str] = None
-    source_config: DatabaseConfig
-    target_config: DatabaseConfig
+    source_config: Union[DatabaseConfig, DatabaseConfigWithSSH]
+    target_config: Union[DatabaseConfig, DatabaseConfigWithSSH]
     comparison_options: ComparisonOptions
     created_at: datetime = Field(default_factory=datetime.now)
     updated_at: Optional[datetime] = None

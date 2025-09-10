@@ -7,6 +7,7 @@ from models.base import (
     DatabaseConfig, ComparisonOptions, ComparisonResult,
     ComparisonProgress
 )
+from models.ssh_tunnel import DatabaseConfigWithSSH
 from services.comparison_engine import ComparisonEngine
 from services.history_manager import HistoryManager
 from core.config import settings
@@ -23,14 +24,21 @@ history_manager = HistoryManager()
 
 @router.post("/compare")
 async def start_comparison(
-    source_config: DatabaseConfig,
-    target_config: DatabaseConfig,
+    source_config: DatabaseConfigWithSSH,
+    target_config: DatabaseConfigWithSSH,
     options: Optional[ComparisonOptions] = None,
     background_tasks: BackgroundTasks = BackgroundTasks()
 ) -> Dict[str, str]:
     """Start a new database comparison"""
     if not options:
         options = ComparisonOptions()
+    
+    # Enhanced logging for debugging
+    logger.info("=== COMPARISON REQUEST ===")
+    logger.info(f"Source config: {source_config.host}:{source_config.port}/{source_config.database}")
+    logger.info(f"Target config: {target_config.host}:{target_config.port}/{target_config.database}")
+    logger.info(f"Source has SSH tunnel: {hasattr(source_config, 'ssh_tunnel') and source_config.ssh_tunnel and source_config.ssh_tunnel.enabled}")
+    logger.info(f"Target has SSH tunnel: {hasattr(target_config, 'ssh_tunnel') and target_config.ssh_tunnel and target_config.ssh_tunnel.enabled}")
     
     # If database is specified in config, limit comparison to that schema only
     included_schemas = []

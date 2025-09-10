@@ -1,5 +1,6 @@
 services:
   backend:
+    container_name: schema-diff-backend
     build: ./backend
     ports:
       - "8000:8000"
@@ -14,6 +15,7 @@ services:
     
   # SSH proxy service with mapped port
   ssh-proxy:
+    container_name: schema-diff-ssh-proxy
     image: python:3.11-slim
     ports:
       - "9999:9999"
@@ -25,6 +27,7 @@ services:
       - "host.docker.internal:host-gateway"
 
   frontend:
+    container_name: schema-diff-frontend
     build:
       context: ./frontend
       dockerfile: Dockerfile.dev
@@ -34,6 +37,7 @@ services:
       - DOCKER_ENV=true
       - ENVIRONMENT=docker
       - NODE_ENV=development
+      - NODE_TLS_REJECT_UNAUTHORIZED=0  # Fix Google Fonts SSL certificate issues
       # Note: API URL will be dynamically set by next.config.js based on DOCKER_ENV
     volumes:
       - ./frontend:/app

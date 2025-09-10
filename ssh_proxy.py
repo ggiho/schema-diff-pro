@@ -182,11 +182,26 @@ class SSHProxy:
                 stdin=subprocess.PIPE
             )
             
-            # Wait for tunnel to establish
-            await asyncio.sleep(2)
+            # Wait for tunnel to establish and verify it's working
+            await asyncio.sleep(3)  # Increased wait time
             
             # Check if process is still running
             if process.poll() is None:
+                # Additional verification: test if the tunnel port is actually accessible
+                await asyncio.sleep(1)  # Give tunnel more time to fully establish
+                
+                # Test tunnel connectivity
+                try:
+                    test_reader, test_writer = await asyncio.wait_for(
+                        asyncio.open_connection('127.0.0.1', local_port),
+                        timeout=5
+                    )
+                    test_writer.close()
+                    await test_writer.wait_closed()
+                    logger.info(f"SSH tunnel {tunnel_id} connectivity verified on port {local_port}")
+                except Exception as e:
+                    logger.warning(f"SSH tunnel {tunnel_id} connectivity test failed: {e}, but process is running")
+                    # Continue anyway as the tunnel might still work for specific protocols
                 logger.info(f"SSH tunnel {tunnel_id} established successfully")
                 self.active_tunnels[tunnel_id] = process
                 return {

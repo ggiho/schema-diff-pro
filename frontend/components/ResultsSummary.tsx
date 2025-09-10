@@ -51,7 +51,7 @@ export function ResultsSummary({ result }: ResultsSummaryProps) {
       <div className="grid gap-4 md:grid-cols-4">
         <div className="rounded-lg border bg-card p-4">
           <p className="text-sm text-muted-foreground">Total Differences</p>
-          <p className="text-2xl font-bold">{result.summary.total_differences}</p>
+          <p className="text-2xl font-bold">{result.summary?.total_differences || 0}</p>
         </div>
         <div className="rounded-lg border bg-card p-4">
           <p className="text-sm text-muted-foreground">Objects Compared</p>
@@ -63,7 +63,7 @@ export function ResultsSummary({ result }: ResultsSummaryProps) {
         </div>
         <div className="rounded-lg border bg-card p-4">
           <p className="text-sm text-muted-foreground">Auto-Fixable</p>
-          <p className="text-2xl font-bold">{result.summary.can_auto_fix}</p>
+          <p className="text-2xl font-bold">{result.summary?.can_auto_fix || 0}</p>
         </div>
       </div>
 
@@ -72,7 +72,7 @@ export function ResultsSummary({ result }: ResultsSummaryProps) {
         <h3 className="mb-4 text-lg font-semibold">Differences by Severity</h3>
         <div className="space-y-3">
           {Object.entries(severityConfig).map(([severity, config]) => {
-            const count = result.summary.by_severity[severity] || 0
+            const count = result.summary?.by_severity?.[severity] || 0
             const Icon = config.icon
             
             return (
@@ -94,11 +94,11 @@ export function ResultsSummary({ result }: ResultsSummaryProps) {
       <div className="grid gap-6 md:grid-cols-2">
         <div className="rounded-lg border bg-card p-6">
           <h3 className="mb-4 text-lg font-semibold">
-            Affected Schemas ({result.summary.schemas_affected.length})
+            Affected Schemas ({result.summary?.schemas_affected?.length || 0})
           </h3>
-          {result.summary.schemas_affected.length > 0 ? (
+          {(result.summary?.schemas_affected?.length || 0) > 0 ? (
             <div className="space-y-2">
-              {result.summary.schemas_affected.map((schema) => (
+              {(result.summary?.schemas_affected || []).map((schema) => (
                 <div key={schema} className="rounded-md bg-white px-3 py-2 border">
                   <span className="text-sm font-medium">{schema}</span>
                 </div>
@@ -112,7 +112,7 @@ export function ResultsSummary({ result }: ResultsSummaryProps) {
         <div className="rounded-lg border bg-card p-6">
           <h3 className="mb-4 text-lg font-semibold">Object Types</h3>
           <div className="space-y-2">
-            {Object.entries(result.summary.by_object_type).map(([type, count]) => (
+            {Object.entries(result.summary?.by_object_type || {}).map(([type, count]) => (
               <div key={type} className="flex items-center justify-between">
                 <span className="text-sm capitalize">{type}</span>
                 <span className="font-medium">{count}</span>
@@ -123,14 +123,14 @@ export function ResultsSummary({ result }: ResultsSummaryProps) {
       </div>
 
       {/* Warnings */}
-      {result.summary.data_loss_risks.length > 0 && (
+      {(result.summary?.data_loss_risks?.length || 0) > 0 && (
         <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-6">
           <div className="mb-3 flex items-center gap-2">
             <AlertCircle className="h-5 w-5 text-destructive" />
             <h3 className="text-lg font-semibold">Data Loss Risks</h3>
           </div>
           <ul className="space-y-2">
-            {result.summary.data_loss_risks.map((risk, index) => (
+            {(result.summary?.data_loss_risks || []).map((risk, index) => (
               <li key={index} className="text-sm">
                 • {risk.object}: {risk.description}
               </li>

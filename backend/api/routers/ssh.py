@@ -112,8 +112,8 @@ async def test_ssh_tunnel(
         try:
             logger.info("Creating SSHTunnelConfig directly...")
             
-            # Log the EXACT dictionary being passed to Pydantic
-            config_dict = request_data['config']
+            # Extract the config from request_data
+            config_dict = request_data.get('config', {})
             logger.info(f"EXACT dict being passed to SSHTunnelConfig:")
             for key, value in config_dict.items():
                 if key == 'private_key_content':

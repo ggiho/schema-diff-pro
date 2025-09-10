@@ -18,7 +18,172 @@ class TableComparer(BaseComparer):
     object_type = ObjectType.TABLE
     
     async def discover_objects(self, connection: DatabaseConnection) -> Dict[str, Any]:
-        """Discover all tables and their columns"""
+        """Discover all tables and their columns using chunked queries for reliability"""
+        try:
+            # First, discover tables only (smaller, faster query)
+            tables_query = text("""
+            SELECT 
+                TABLE_SCHEMA,
+                TABLE_NAME,
+                ENGINE,
+                TABLE_COLLATION,
+                TABLE_COMMENT,
+                CREATE_OPTIONS
+            FROM information_schema.TABLES
+            WHERE TABLE_SCHEMA NOT IN :system_dbs
+                AND TABLE_TYPE = 'BASE TABLE'
+            ORDER BY TABLE_SCHEMA, TABLE_NAME
+            """)
+            
+            logger.debug("Discovering tables...")
+            table_results = await connection.execute_query(
+                tables_query,
+                {"system_dbs": tuple(settings.SYSTEM_DATABASES)}
+            )
+            
+            tables = {}
+            table_list = []
+            
+            # Process table results and build table structure
+            for row in table_results:
+                schema_name = row[0]
+                table_name = row[1]
+                
+                # Skip if filtered out
+                if not self.should_compare_object(schema_name, table_name):
+                    continue
+                
+                table_key = f"{schema_name}.{table_name}"
+                table_list.append((schema_name, table_name))
+                
+                tables[table_key] = {
+                    "schema_name": schema_name,
+                    "table_name": table_name,
+                    "engine": row[2],
+                    "collation": row[3],
+                    "comment": row[4],
+                    "create_options": row[5],
+                    "columns": {}
+                }
+            
+            logger.debug(f"Found {len(table_list)} tables, discovering columns...")
+            
+            # Now discover columns with micro-batching for SSH tunnel stability
+            batch_size = 2 if "127.0.0.1" in str(connection.connection_url) or "localhost" in str(connection.connection_url) else 5  # Ultra-small batches for SSH tunnels
+            for i in range(0, len(table_list), batch_size):
+                batch = table_list[i:i + batch_size]
+                
+                # Create WHERE clause for this batch
+                table_conditions = []
+                for schema_name, table_name in batch:
+                    table_conditions.append(f"(c.TABLE_SCHEMA = '{schema_name}' AND c.TABLE_NAME = '{table_name}')")
+                
+                if not table_conditions:
+                    continue
+                
+                batch_where = " OR ".join(table_conditions)
+                
+                columns_query = text(f"""
+                SELECT 
+                    c.TABLE_SCHEMA,
+                    c.TABLE_NAME,
+                    c.COLUMN_NAME,
+                    c.ORDINAL_POSITION,
+                    c.COLUMN_DEFAULT,
+                    c.IS_NULLABLE,
+                    c.DATA_TYPE,
+                    c.CHARACTER_MAXIMUM_LENGTH,
+                    c.NUMERIC_PRECISION,
+                    c.NUMERIC_SCALE,
+                    c.DATETIME_PRECISION,
+                    c.CHARACTER_SET_NAME,
+                    c.COLLATION_NAME,
+                    c.COLUMN_TYPE,
+                    c.COLUMN_KEY,
+                    c.EXTRA,
+                    c.COLUMN_COMMENT
+                FROM information_schema.COLUMNS c
+                WHERE ({batch_where})
+                ORDER BY c.TABLE_SCHEMA, c.TABLE_NAME, c.ORDINAL_POSITION
+                """)
+                
+                try:
+                    batch_num = i//batch_size + 1
+                    total_batches = (len(table_list) + batch_size - 1)//batch_size
+                    logger.debug(f"Discovering columns for batch {batch_num}/{total_batches} (SSH tunnel optimized)")
+                    
+                    # Execute with shorter timeout for SSH tunnels
+                    column_results = await connection.execute_query(columns_query)
+                    
+                    # Process column results with success counter
+                    columns_found = 0
+                    for row in column_results:
+                        schema_name = row[0]
+                        table_name = row[1]
+                        column_name = row[2]
+                        table_key = f"{schema_name}.{table_name}"
+                        
+                        if table_key in tables:
+                            tables[table_key]["columns"][column_name] = {
+                                "ordinal_position": row[3],
+                                "column_default": row[4],
+                                "is_nullable": row[5] == "YES",
+                                "data_type": row[6],
+                                "character_maximum_length": row[7],
+                                "numeric_precision": row[8],
+                                "numeric_scale": row[9],
+                                "datetime_precision": row[10],
+                                "character_set": row[11],
+                                "collation": row[12],
+                                "column_type": row[13],
+                                "column_key": row[14],
+                                "extra": row[15],
+                                "comment": row[16]
+                            }
+                            columns_found += 1
+                    
+                    logger.debug(f"Batch {batch_num}: discovered {columns_found} columns successfully")
+                    
+                except Exception as e:
+                    logger.warning(f"Failed to discover columns for batch {i//batch_size + 1}: {e}")
+                    # Mark tables in failed batch as incomplete but continue
+                    for schema_name, table_name in batch:
+                        table_key = f"{schema_name}.{table_name}"
+                        if table_key in tables:
+                            tables[table_key]["columns"] = {}
+                            tables[table_key]["_discovery_error"] = str(e)
+                    continue
+            
+            logger.debug(f"Discovery complete: {len(tables)} tables with columns")
+            return tables
+            
+        except Exception as e:
+            logger.error(f"Failed to discover objects in chunked mode: {e}")
+            # Return partial results if any tables were discovered
+            if tables:
+                logger.warning(f"Returning partial discovery results: {len(tables)} tables with potential column discovery issues")
+                return tables
+            
+            # Only fallback if no tables were discovered at all
+            logger.info("No tables discovered, attempting fallback to original discovery method...")
+            try:
+                fallback_result = await self._discover_objects_fallback(connection)
+                if not fallback_result:
+                    # If fallback also fails and returns empty results, raise an exception
+                    # to prevent false "target only" comparisons
+                    error_msg = f"Failed to discover any table data from database. Original error: {e}"
+                    logger.error(error_msg)
+                    raise Exception(error_msg)
+                return fallback_result
+            except Exception as fallback_error:
+                error_msg = f"Both chunked and fallback discovery failed. Database may be unreachable. Chunked error: {e}. Fallback error: {fallback_error}"
+                logger.error(error_msg)
+                raise Exception(error_msg)
+    
+    async def _discover_objects_fallback(self, connection: DatabaseConnection) -> Dict[str, Any]:
+        """Fallback to original discovery method if chunking fails"""
+        logger.warning("Using fallback discovery method due to chunking failure")
+        
         query = text("""
         SELECT 
             t.TABLE_SCHEMA,

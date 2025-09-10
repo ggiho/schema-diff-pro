@@ -306,9 +306,12 @@ class DatabaseConfigWithSSH(BaseModel):
     def get_effective_connection_params(self) -> Dict[str, Any]:
         """Get actual connection parameters (with tunnel if enabled)"""
         if self.ssh_tunnel and self.ssh_tunnel.enabled:
-            # Use localhost with tunnel port
+            # Use tunnel connection - CRITICAL FIX for Docker environment
+            import os
+            # In Docker environment, use ssh-proxy hostname, otherwise localhost
+            host = "schema-diff-ssh-proxy" if os.getenv('DOCKER_ENV') == 'true' else "127.0.0.1"
             return {
-                "host": "127.0.0.1",
+                "host": host,
                 "port": self.ssh_tunnel.local_bind_port or 3306,
                 "user": self.user,
                 "password": self.password,
@@ -324,21 +327,24 @@ class DatabaseConfigWithSSH(BaseModel):
                 "database": self.database
             }
     
-    def get_connection_url(self, use_tunnel: bool = None) -> str:
+    def get_connection_url(self, use_tunnel: bool = None, database: Optional[str] = None) -> str:
         """Generate connection URL (with tunnel if enabled)"""
         if use_tunnel is None:
             use_tunnel = self.ssh_tunnel and self.ssh_tunnel.enabled
             
         if use_tunnel and self.ssh_tunnel:
-            # Use tunnel connection
-            host = "127.0.0.1"
+            # Use tunnel connection - CRITICAL FIX for Docker environment
+            import os
+            # In Docker environment, use ssh-proxy hostname, otherwise localhost
+            host = "schema-diff-ssh-proxy" if os.getenv('DOCKER_ENV') == 'true' else "127.0.0.1"
             port = self.ssh_tunnel.local_bind_port or 3306
         else:
             # Direct connection
             host = self.host
             port = self.port
             
-        db = self.database or ""
+        # Use provided database parameter if given, otherwise use instance database
+        db = database if database is not None else (self.database or "")
         return f"mysql+pymysql://{self.user}:{self.password}@{host}:{port}/{db}"
     
     def get_display_config(self) -> Dict[str, Any]:

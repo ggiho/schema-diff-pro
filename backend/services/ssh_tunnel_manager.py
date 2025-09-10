@@ -42,6 +42,12 @@ class SSHTunnelManager:
         self.ssh_connections: Dict[str, Any] = {}  # SSH connection objects
         self.tunnel_listeners: Dict[str, Any] = {}  # Port forward listeners
         
+        # Connection persistence and reuse tracking
+        self.tunnel_pools: Dict[str, List[str]] = {}  # host:port -> list of tunnel_ids
+        self.schema_discovery_tunnels: Dict[str, str] = {}  # connection_key -> tunnel_id
+        self.tunnel_keep_alive_tasks: Dict[str, asyncio.Task] = {}  # tunnel_id -> keep_alive_task
+        self.connection_warming_enabled = True
+        
         self._cleanup_task = None
         self._start_background_tasks()
     
@@ -57,26 +63,48 @@ class SSHTunnelManager:
                 await asyncio.sleep(60)  # Check every minute
                 await self._cleanup_stale_tunnels()
                 await self._update_tunnel_stats()
+                await self._maintain_tunnel_pools()
+                await self._refresh_keep_alive_tasks()
             except Exception as e:
                 logger.error(f"Tunnel maintenance task error: {e}")
     
     async def _cleanup_stale_tunnels(self):
-        """Remove stale or failed tunnels"""
+        """Remove stale or failed tunnels with enhanced persistence logic"""
         stale_tunnels = []
-        cutoff_time = datetime.now() - timedelta(minutes=30)
+        # Extended cutoff time for schema discovery tunnels (2 hours vs 30 minutes)
+        regular_cutoff = datetime.now() - timedelta(minutes=30)
+        schema_cutoff = datetime.now() - timedelta(hours=2)
         
         for tunnel_id, tunnel_info in self.active_tunnels.items():
-            # Check for stale tunnels
+            # Determine if this is a schema discovery tunnel
+            is_schema_tunnel = any(tid == tunnel_id for tid in self.schema_discovery_tunnels.values())
+            cutoff_time = schema_cutoff if is_schema_tunnel else regular_cutoff
+            
+            # Check for stale tunnels with different thresholds
             if (tunnel_info.status == TunnelStatus.FAILED or 
                 (tunnel_info.last_activity and tunnel_info.last_activity < cutoff_time)):
+                # Give schema discovery tunnels a chance to recover
+                if is_schema_tunnel and tunnel_info.status != TunnelStatus.FAILED:
+                    logger.info(f"Attempting to recover schema discovery tunnel: {tunnel_id}")
+                    recovery_success = await self._attempt_tunnel_recovery(tunnel_id)
+                    if recovery_success:
+                        continue
+                
                 stale_tunnels.append(tunnel_id)
                 continue
             
-            # Health check for active tunnels
+            # Enhanced health check for active tunnels
             if tunnel_info.status == TunnelStatus.CONNECTED:
                 is_healthy = await self._health_check_tunnel(tunnel_id)
                 if not is_healthy:
                     logger.warning(f"Tunnel {tunnel_id} failed health check")
+                    # Attempt immediate recovery for schema discovery tunnels
+                    if is_schema_tunnel:
+                        logger.info(f"Attempting immediate recovery for schema discovery tunnel: {tunnel_id}")
+                        recovery_success = await self._attempt_tunnel_recovery(tunnel_id)
+                        if recovery_success:
+                            continue
+                    
                     tunnel_info.status = TunnelStatus.FAILED
                     tunnel_info.error_count += 1
                     tunnel_info.last_error = "Health check failed"
@@ -114,6 +142,105 @@ class SSHTunnelManager:
         
         except Exception as e:
             logger.debug(f"Health check failed for tunnel {tunnel_id}: {e}")
+            return False
+    
+    async def _maintain_tunnel_pools(self):
+        """Maintain tunnel pools for connection reuse"""
+        try:
+            for pool_key, tunnel_ids in list(self.tunnel_pools.items()):
+                # Remove closed tunnels from pools
+                active_tunnel_ids = [tid for tid in tunnel_ids if tid in self.active_tunnels]
+                
+                if len(active_tunnel_ids) != len(tunnel_ids):
+                    logger.debug(f"Cleaned pool {pool_key}: {len(tunnel_ids)} -> {len(active_tunnel_ids)} tunnels")
+                    self.tunnel_pools[pool_key] = active_tunnel_ids
+                
+                # Remove empty pools
+                if not active_tunnel_ids:
+                    del self.tunnel_pools[pool_key]
+                    logger.debug(f"Removed empty tunnel pool: {pool_key}")
+        
+        except Exception as e:
+            logger.error(f"Tunnel pool maintenance error: {e}")
+    
+    async def _refresh_keep_alive_tasks(self):
+        """Refresh keep-alive tasks for active tunnels"""
+        try:
+            # Remove completed or cancelled keep-alive tasks
+            completed_tasks = []
+            for tunnel_id, task in self.tunnel_keep_alive_tasks.items():
+                if task.done() or task.cancelled():
+                    completed_tasks.append(tunnel_id)
+            
+            for tunnel_id in completed_tasks:
+                del self.tunnel_keep_alive_tasks[tunnel_id]
+                logger.debug(f"Removed completed keep-alive task for tunnel: {tunnel_id}")
+            
+            # Start keep-alive tasks for schema discovery tunnels without them
+            for tunnel_id in self.schema_discovery_tunnels.values():
+                if (tunnel_id in self.active_tunnels and 
+                    tunnel_id not in self.tunnel_keep_alive_tasks and
+                    self.active_tunnels[tunnel_id].status == TunnelStatus.CONNECTED):
+                    
+                    task = asyncio.create_task(self._keep_tunnel_alive(tunnel_id))
+                    self.tunnel_keep_alive_tasks[tunnel_id] = task
+                    logger.debug(f"Started keep-alive task for schema discovery tunnel: {tunnel_id}")
+        
+        except Exception as e:
+            logger.error(f"Keep-alive task refresh error: {e}")
+    
+    async def _keep_tunnel_alive(self, tunnel_id: str):
+        """Keep tunnel alive with periodic health checks and activity"""
+        try:
+            while tunnel_id in self.active_tunnels:
+                tunnel_info = self.active_tunnels[tunnel_id]
+                
+                if tunnel_info.status != TunnelStatus.CONNECTED:
+                    break
+                
+                # Perform health check
+                is_healthy = await self._health_check_tunnel(tunnel_id)
+                if is_healthy:
+                    tunnel_info.last_activity = datetime.now()
+                    logger.debug(f"Keep-alive ping successful for tunnel: {tunnel_id}")
+                else:
+                    logger.warning(f"Keep-alive ping failed for tunnel: {tunnel_id}")
+                    # Attempt recovery
+                    recovery_success = await self._attempt_tunnel_recovery(tunnel_id)
+                    if not recovery_success:
+                        logger.error(f"Keep-alive recovery failed for tunnel: {tunnel_id}")
+                        break
+                
+                # Wait before next keep-alive check (every 5 minutes)
+                await asyncio.sleep(300)
+        
+        except asyncio.CancelledError:
+            logger.debug(f"Keep-alive task cancelled for tunnel: {tunnel_id}")
+        except Exception as e:
+            logger.error(f"Keep-alive task error for tunnel {tunnel_id}: {e}")
+    
+    async def _attempt_tunnel_recovery(self, tunnel_id: str) -> bool:
+        """Attempt to recover a failed tunnel"""
+        try:
+            tunnel_info = self.active_tunnels.get(tunnel_id)
+            if not tunnel_info:
+                return False
+            
+            logger.info(f"Attempting recovery for tunnel: {tunnel_id}")
+            
+            # Try a simple health check first
+            if await self._health_check_tunnel(tunnel_id):
+                tunnel_info.status = TunnelStatus.CONNECTED
+                tunnel_info.last_activity = datetime.now()
+                tunnel_info.last_error = None
+                logger.info(f"Tunnel {tunnel_id} recovered via health check")
+                return True
+            
+            # Attempt full reconnection
+            return await self.reconnect_tunnel(tunnel_id)
+        
+        except Exception as e:
+            logger.error(f"Tunnel recovery failed for {tunnel_id}: {e}")
             return False
     
     def _find_free_port(self, start_port: int = 10000) -> int:
@@ -303,6 +430,70 @@ class SSHTunnelManager:
         
         return cleaned_auth_options
     
+    async def get_or_create_tunnel_for_schema_discovery(
+        self,
+        config: SSHTunnelConfig,
+        connection_key: str,
+        timeout: int = 60
+    ) -> SSHConnectionInfo:
+        """Get existing tunnel or create new one optimized for schema discovery operations"""
+        # Check if we already have a tunnel for this connection
+        existing_tunnel_id = self.schema_discovery_tunnels.get(connection_key)
+        if existing_tunnel_id and existing_tunnel_id in self.active_tunnels:
+            tunnel_info = self.active_tunnels[existing_tunnel_id]
+            
+            # Verify tunnel is healthy
+            if tunnel_info.status == TunnelStatus.CONNECTED:
+                is_healthy = await self._health_check_tunnel(existing_tunnel_id)
+                if is_healthy:
+                    tunnel_info.last_activity = datetime.now()
+                    tunnel_info.connections_count += 1
+                    logger.info(f"Reusing existing tunnel for schema discovery: {existing_tunnel_id}")
+                    return tunnel_info
+                else:
+                    logger.warning(f"Existing tunnel {existing_tunnel_id} is unhealthy, creating new one")
+        
+        # Create new tunnel with extended timeout for schema operations
+        logger.info(f"Creating new tunnel for schema discovery: {connection_key}")
+        tunnel_info = await self.create_tunnel(config, test_mode=False, timeout=timeout)
+        
+        # Register as schema discovery tunnel if successful
+        if tunnel_info.status == TunnelStatus.CONNECTED:
+            self.schema_discovery_tunnels[connection_key] = tunnel_info.tunnel_id
+            
+            # Start keep-alive task
+            if self.connection_warming_enabled:
+                keep_alive_task = asyncio.create_task(self._keep_tunnel_alive(tunnel_info.tunnel_id))
+                self.tunnel_keep_alive_tasks[tunnel_info.tunnel_id] = keep_alive_task
+                logger.info(f"Started keep-alive for schema discovery tunnel: {tunnel_info.tunnel_id}")
+        
+        return tunnel_info
+    
+    async def warm_connection_pool(self, configs: List[SSHTunnelConfig]) -> Dict[str, bool]:
+        """Pre-warm connection pool for anticipated schema discovery operations"""
+        results = {}
+        
+        for config in configs:
+            connection_key = f"{config.ssh_host}:{config.ssh_port}:{config.remote_bind_host}:{config.remote_bind_port}"
+            
+            try:
+                logger.info(f"Warming connection for: {connection_key}")
+                tunnel_info = await self.get_or_create_tunnel_for_schema_discovery(
+                    config, connection_key, timeout=60
+                )
+                results[connection_key] = tunnel_info.status == TunnelStatus.CONNECTED
+                
+                if results[connection_key]:
+                    logger.info(f"Successfully warmed connection: {connection_key}")
+                else:
+                    logger.warning(f"Failed to warm connection: {connection_key}")
+            
+            except Exception as e:
+                logger.error(f"Connection warming failed for {connection_key}: {e}")
+                results[connection_key] = False
+        
+        return results
+
     async def create_tunnel(
         self, 
         config: SSHTunnelConfig, 
@@ -431,6 +622,12 @@ class SSHTunnelManager:
             if not test_mode:
                 self.ssh_connections[tunnel_id] = ssh_conn
                 self.tunnel_listeners[tunnel_id] = listener
+                
+                # Add to tunnel pool for reuse
+                pool_key = f"{config.ssh_host}:{config.ssh_port}"
+                if pool_key not in self.tunnel_pools:
+                    self.tunnel_pools[pool_key] = []
+                self.tunnel_pools[pool_key].append(tunnel_id)
             
             logger.info(f"SSH tunnel established: {tunnel_id} -> {local_port}")
             
@@ -512,10 +709,37 @@ class SSHTunnelManager:
                         except Exception as e:
                             logger.warning(f"Failed to close host SSH tunnel on port {port}: {e}")
             
-            # Remove from active tunnels
+            # Remove from active tunnels and associated tracking
             if tunnel_id in self.active_tunnels:
                 del self.active_tunnels[tunnel_id]
                 success = True
+                
+                # Clean up schema discovery tunnel tracking
+                schema_keys_to_remove = []
+                for conn_key, tid in self.schema_discovery_tunnels.items():
+                    if tid == tunnel_id:
+                        schema_keys_to_remove.append(conn_key)
+                
+                for key in schema_keys_to_remove:
+                    del self.schema_discovery_tunnels[key]
+                    logger.debug(f"Removed schema discovery tunnel mapping: {key}")
+                
+                # Cancel keep-alive task
+                if tunnel_id in self.tunnel_keep_alive_tasks:
+                    self.tunnel_keep_alive_tasks[tunnel_id].cancel()
+                    del self.tunnel_keep_alive_tasks[tunnel_id]
+                    logger.debug(f"Cancelled keep-alive task for tunnel: {tunnel_id}")
+                
+                # Remove from tunnel pools
+                for pool_key, tunnel_list in list(self.tunnel_pools.items()):
+                    if tunnel_id in tunnel_list:
+                        tunnel_list.remove(tunnel_id)
+                        logger.debug(f"Removed tunnel {tunnel_id} from pool {pool_key}")
+                        # Remove empty pools
+                        if not tunnel_list:
+                            del self.tunnel_pools[pool_key]
+                            logger.debug(f"Removed empty tunnel pool: {pool_key}")
+                        break
             
             if success:
                 logger.info(f"SSH tunnel closed: {tunnel_id}")
@@ -625,7 +849,7 @@ class SSHTunnelManager:
         try:
             # Connect to SSH proxy service
             reader, writer = await asyncio.wait_for(
-                asyncio.open_connection('ssh-proxy', 9999),
+                asyncio.open_connection('schema-diff-ssh-proxy', 9999),
                 timeout=10
             )
             
@@ -668,7 +892,7 @@ class SSHTunnelManager:
         try:
             # Connect to SSH proxy service
             reader, writer = await asyncio.wait_for(
-                asyncio.open_connection('ssh-proxy', 9999),
+                asyncio.open_connection('schema-diff-ssh-proxy', 9999),
                 timeout=5
             )
             
