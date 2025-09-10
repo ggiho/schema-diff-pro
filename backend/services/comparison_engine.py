@@ -145,6 +145,22 @@ class ComparisonEngine:
         started_at = datetime.now()
         all_differences: List[Difference] = []
         
+        # Preserve original configs for export (before SSH tunnel modification)
+        original_source_config = source_config.copy() if hasattr(source_config, 'copy') else DatabaseConfig(
+            host=source_config.host,
+            port=source_config.port,
+            user=source_config.user,
+            password=source_config.password,
+            database=source_config.database
+        )
+        original_target_config = target_config.copy() if hasattr(target_config, 'copy') else DatabaseConfig(
+            host=target_config.host,
+            port=target_config.port,
+            user=target_config.user,
+            password=target_config.password,
+            database=target_config.database
+        )
+        
         # Setup SSH tunnels if needed
         logger.info(f"Comparison {comparison_id}: Setting up connections")
         
@@ -188,8 +204,8 @@ class ComparisonEngine:
                 comparison_id=comparison_id,
                 started_at=started_at,
                 completed_at=completed_at,
-                source_config=source_config,
-                target_config=target_config,
+                source_config=original_source_config,
+                target_config=original_target_config,
                 options=options,
                 differences=[],
                 summary={"error": error_msg, "ssh_tunnel_error": True},
@@ -277,8 +293,8 @@ class ComparisonEngine:
                     comparison_id=comparison_id,
                     started_at=started_at,
                     completed_at=completed_at,
-                    source_config=source_config,
-                    target_config=target_config,
+                    source_config=original_source_config,
+                    target_config=original_target_config,
                     options=options,
                     differences=[],
                     summary={"error": error_msg, "source_connection_failed": True},
@@ -322,8 +338,8 @@ class ComparisonEngine:
                     comparison_id=comparison_id,
                     started_at=started_at,
                     completed_at=completed_at,
-                    source_config=source_config,
-                    target_config=target_config,
+                    source_config=original_source_config,
+                    target_config=original_target_config,
                     options=options,
                     differences=[],
                     summary={"error": error_msg, "target_connection_failed": True},
@@ -411,8 +427,8 @@ class ComparisonEngine:
                             comparison_id=comparison_id,
                             started_at=started_at,
                             completed_at=completed_at,
-                            source_config=source_config,
-                            target_config=target_config,
+                            source_config=original_source_config,
+                            target_config=original_target_config,
                             options=options,
                             differences=[],
                             summary={"error": error_msg, "total_objects_compared": 0},
@@ -460,13 +476,13 @@ class ComparisonEngine:
                 message=f"Comparison complete. Found {len(all_differences)} differences"
             )
             
-            # Yield final result
+            # Yield final result with original configs (for exports)
             result = ComparisonResult(
                 comparison_id=comparison_id,
                 started_at=started_at,
                 completed_at=completed_at,
-                source_config=source_config,
-                target_config=target_config,
+                source_config=original_source_config,
+                target_config=original_target_config,
                 options=options,
                 differences=all_differences,
                 summary=summary,
