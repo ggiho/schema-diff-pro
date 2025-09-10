@@ -62,7 +62,25 @@ export function ComparisonResults({ comparisonId, onNewComparison }: ComparisonR
   const downloadResults = () => {
     if (!result) return
 
-    const data = JSON.stringify(result, null, 2)
+    // SECURITY: Remove sensitive data before export
+    const sanitizedResult = {
+      ...result,
+      // Remove entire config objects to prevent any credential leakage
+      source_config: {
+        host: result.source_config.host,
+        port: result.source_config.port,
+        database: result.source_config.database,
+        // DO NOT include user, password, or SSH tunnel info
+      },
+      target_config: {
+        host: result.target_config.host,
+        port: result.target_config.port,
+        database: result.target_config.database,
+        // DO NOT include user, password, or SSH tunnel info
+      }
+    }
+
+    const data = JSON.stringify(sanitizedResult, null, 2)
     const blob = new Blob([data], { type: 'application/json' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
