@@ -14,14 +14,14 @@ services:
       - "host.docker.internal:host-gateway"
     
   # SSH proxy service with mapped port
+  # Linus: "Build the image once, not on every container start"
   ssh-proxy:
     container_name: schema-diff-ssh-proxy
-    image: python:3.11-slim
+    build:
+      context: .
+      dockerfile: ssh-proxy.Dockerfile
     ports:
       - "9999:9999"
-    volumes:
-      - ./ssh_proxy.py:/ssh_proxy.py:ro
-    command: sh -c "apt-get update && apt-get install -y openssh-client && python /ssh_proxy.py"
     restart: unless-stopped
     extra_hosts:
       - "host.docker.internal:host-gateway"

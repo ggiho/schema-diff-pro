@@ -4,19 +4,7 @@ import { useState, useEffect } from 'react'
 import { Clock, Database } from 'lucide-react'
 import { formatDistanceToNow } from 'date-fns'
 import { getRecentComparisons } from '@/lib/api'
-import { toast } from 'react-hot-toast'
-
-interface RecentComparison {
-  id: string
-  source: {
-    display_name: string
-  }
-  target: {
-    display_name: string
-  }
-  timestamp: string
-  difference_count: number
-}
+import { RecentComparison } from '@/types'
 
 export function RecentComparisons() {
   const [recentComparisons, setRecentComparisons] = useState<RecentComparison[]>([])

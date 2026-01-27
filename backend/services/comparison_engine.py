@@ -11,6 +11,13 @@ from models.base import (
     DatabaseConfig, Difference, ObjectType
 )
 from core.database import DatabaseConnection, connection_pool
+from core.constants import (
+    is_connection_error,
+    is_critical_failure,
+    calculate_retry_delay,
+    DEFAULT_MAX_RETRIES,
+    DEFAULT_RETRY_DELAY_SECONDS,
+)
 from services.comparers.table_comparer import TableComparer
 from services.comparers.index_comparer import IndexComparer
 from services.comparers.constraint_comparer import ConstraintComparer
@@ -28,8 +35,8 @@ class ComparisonEngine:
             ObjectType.INDEX: IndexComparer,
             ObjectType.CONSTRAINT: ConstraintComparer,
         }
-        self.max_retries = 3
-        self.retry_delay = 2  # seconds
+        self.max_retries = DEFAULT_MAX_RETRIES
+        self.retry_delay = DEFAULT_RETRY_DELAY_SECONDS
     
     async def _setup_ssh_tunnel_if_needed(self, config: DatabaseConfig, connection_name: str) -> DatabaseConfig:
         """Setup SSH tunnel if configured and update connection URL"""
@@ -107,31 +114,18 @@ class ComparisonEngine:
                 return await operation()
             except (OperationalError, Exception) as e:
                 last_exception = e
-                error_str = str(e).lower()
+                error_str = str(e)
                 
-                # Check if this is a connection-related error that we should retry
-                connection_errors = [
-                    'lost connection to mysql server',
-                    'mysql server has gone away',
-                    'connection timeout',
-                    'broken pipe',
-                    'connection refused'
-                ]
-                
-                is_connection_error = any(error in error_str for error in connection_errors)
-                
-                if is_connection_error and attempt < self.max_retries - 1:
-                    wait_time = self.retry_delay * (2 ** attempt)  # Exponential backoff
+                if is_connection_error(error_str) and attempt < self.max_retries - 1:
+                    wait_time = calculate_retry_delay(attempt, self.retry_delay)
                     logger.warning(f"{operation_name} failed (attempt {attempt + 1}/{self.max_retries}): {e}")
                     logger.info(f"Retrying in {wait_time} seconds...")
                     await asyncio.sleep(wait_time)
                     continue
                 else:
-                    # Either not a connection error or final attempt
                     logger.error(f"{operation_name} failed after {attempt + 1} attempts: {e}")
                     raise
         
-        # This should never be reached, but just in case
         raise last_exception
     
     async def compare_databases(
@@ -404,11 +398,8 @@ class ComparisonEngine:
                 except Exception as e:
                     error_msg = str(e)
                     
-                    # Check if this is a data discovery failure that should stop the comparison
-                    if ("Failed to discover any table data" in error_msg or 
-                        "Both chunked and fallback discovery failed" in error_msg or
-                        "Database may be unreachable" in error_msg):
-                        
+                    # Check if this is a critical failure that should stop the comparison
+                    if is_critical_failure(error_msg):
                         # Critical failure - stop the entire comparison
                         yield ComparisonProgress(
                             comparison_id=comparison_id,

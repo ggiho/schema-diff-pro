@@ -1,23 +1,125 @@
 from typing import List, Dict, Any, Tuple, Optional
 from collections import defaultdict, deque
 import logging
+import copy
 
 from models.base import (
-    Difference, SyncScript, DiffType, ObjectType, SeverityLevel
+    Difference, SyncScript, DiffType, ObjectType, SeverityLevel, SyncDirection
 )
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
+# Mapping for reversing diff types when changing sync direction
+REVERSE_DIFF_TYPE_MAP: Dict[DiffType, DiffType] = {
+    # Tables
+    DiffType.TABLE_MISSING_SOURCE: DiffType.TABLE_MISSING_TARGET,
+    DiffType.TABLE_MISSING_TARGET: DiffType.TABLE_MISSING_SOURCE,
+    # Columns
+    DiffType.COLUMN_ADDED: DiffType.COLUMN_REMOVED,
+    DiffType.COLUMN_REMOVED: DiffType.COLUMN_ADDED,
+    # Indexes
+    DiffType.INDEX_MISSING_SOURCE: DiffType.INDEX_MISSING_TARGET,
+    DiffType.INDEX_MISSING_TARGET: DiffType.INDEX_MISSING_SOURCE,
+    DiffType.INDEX_RENAMED: DiffType.INDEX_RENAMED,  # Same in both directions, just swap names
+    # Constraints
+    DiffType.CONSTRAINT_MISSING_SOURCE: DiffType.CONSTRAINT_MISSING_TARGET,
+    DiffType.CONSTRAINT_MISSING_TARGET: DiffType.CONSTRAINT_MISSING_SOURCE,
+    DiffType.CONSTRAINT_RENAMED: DiffType.CONSTRAINT_RENAMED,  # Same in both directions, just swap names
+}
+
 
 class SyncScriptGenerator:
     """Generate SQL synchronization scripts from differences"""
     
-    def __init__(self, differences: List[Difference], comparison_id: str):
-        self.differences = differences
+    def __init__(
+        self, 
+        differences: List[Difference], 
+        comparison_id: str,
+        direction: SyncDirection = SyncDirection.SOURCE_TO_TARGET
+    ):
+        self.original_differences = differences
         self.comparison_id = comparison_id
+        self.direction = direction
         self.dependency_graph = defaultdict(set)  # Using indices as keys
         self.warnings = []
+        
+        # Transform differences based on direction
+        self.differences = self._transform_differences_for_direction(differences, direction)
+    
+    def _transform_differences_for_direction(
+        self, 
+        differences: List[Difference],
+        direction: SyncDirection
+    ) -> List[Difference]:
+        """
+        Transform differences based on sync direction.
+        
+        - SOURCE_TO_TARGET (default): Apply changes to make TARGET look like SOURCE
+        - TARGET_TO_SOURCE: Apply changes to make SOURCE look like TARGET (reverse)
+        """
+        if direction == SyncDirection.SOURCE_TO_TARGET:
+            # Default behavior - no transformation needed
+            return differences
+        
+        # TARGET_TO_SOURCE: Reverse the differences
+        transformed = []
+        for diff in differences:
+            # Deep copy to avoid modifying original
+            new_diff = copy.deepcopy(diff)
+            
+            # Reverse diff type if mappable
+            if diff.diff_type in REVERSE_DIFF_TYPE_MAP:
+                new_diff.diff_type = REVERSE_DIFF_TYPE_MAP[diff.diff_type]
+            
+            # Swap source and target values
+            new_diff.source_value = diff.target_value
+            new_diff.target_value = diff.source_value
+            
+            # Update description to reflect reversed direction
+            new_diff.description = self._reverse_description(diff.description)
+            
+            transformed.append(new_diff)
+        
+        return transformed
+    
+    def _reverse_description(self, description: str) -> str:
+        """Reverse direction references in description"""
+        import re
+        
+        result = description
+        
+        # Use placeholder to avoid double replacement
+        result = re.sub(
+            r'exists only in source', 
+            '<<TARGET_PLACEHOLDER>>', 
+            result, 
+            flags=re.IGNORECASE
+        )
+        result = re.sub(
+            r'exists only in target', 
+            'exists only in source', 
+            result, 
+            flags=re.IGNORECASE
+        )
+        result = result.replace('<<TARGET_PLACEHOLDER>>', 'exists only in target')
+        
+        # Same for "missing in" patterns
+        result = re.sub(
+            r'missing in source', 
+            '<<TARGET_PLACEHOLDER2>>', 
+            result, 
+            flags=re.IGNORECASE
+        )
+        result = re.sub(
+            r'missing in target', 
+            'missing in source', 
+            result, 
+            flags=re.IGNORECASE
+        )
+        result = result.replace('<<TARGET_PLACEHOLDER2>>', 'missing in target')
+        
+        return result
         
     def generate_sync_script(self) -> SyncScript:
         """Generate forward and rollback scripts"""
@@ -27,11 +129,14 @@ class SyncScriptGenerator:
         # Sort differences by dependencies
         ordered_differences = self._topological_sort()
         
+        # Filter out redundant changes for tables that will be dropped or created
+        filtered_differences = self._filter_redundant_changes(ordered_differences)
+        
         # Generate SQL statements
         forward_statements = []
         rollback_statements = []
         
-        for diff in ordered_differences:
+        for diff in filtered_differences:
             try:
                 forward, rollback = self._generate_statements(diff)
                 if forward:
@@ -45,10 +150,18 @@ class SyncScriptGenerator:
         # Analyze impact
         impact = self._analyze_impact(ordered_differences)
         
+        # Determine script title based on direction
+        if self.direction == SyncDirection.SOURCE_TO_TARGET:
+            forward_title = "Forward Migration (Source → Target)"
+            rollback_title = "Rollback Script (Target → Source)"
+        else:
+            forward_title = "Forward Migration (Target → Source)"
+            rollback_title = "Rollback Script (Source → Target)"
+        
         return SyncScript(
             comparison_id=self.comparison_id,
-            forward_script=self._format_script(forward_statements, "Forward Migration"),
-            rollback_script=self._format_script(list(reversed(rollback_statements)), "Rollback Script"),
+            forward_script=self._format_script(forward_statements, forward_title),
+            rollback_script=self._format_script(list(reversed(rollback_statements)), rollback_title),
             warnings=self.warnings,
             estimated_impact=impact,
             estimated_duration=self._estimate_duration(ordered_differences),
@@ -61,6 +174,71 @@ class SyncScriptGenerator:
         # For now, we'll skip complex dependency graph building
         # and just rely on fix_order for sorting
         pass
+    
+    def _filter_redundant_changes(self, differences: List[Difference]) -> List[Difference]:
+        """Filter out redundant changes for tables that will be dropped or created
+        
+        If a table is being dropped, we don't need to:
+        - Drop/modify columns
+        - Drop/modify indexes
+        - Drop/modify constraints
+        
+        If a table is being created, we don't need to:
+        - Add columns (they're part of CREATE TABLE)
+        - Add indexes (can be added, but CREATE TABLE should include them)
+        - Add constraints (can be added, but CREATE TABLE should include them)
+        
+        Note: This function is called AFTER _transform_differences_for_direction,
+        so diff_types have already been transformed based on direction.
+        After transformation:
+        - TABLE_MISSING_TARGET always means DROP TABLE (regardless of direction)
+        - TABLE_MISSING_SOURCE always means CREATE TABLE (regardless of direction)
+        """
+        # Find tables being dropped or created
+        tables_to_drop: set = set()
+        tables_to_create: set = set()
+        
+        for diff in differences:
+            if diff.object_type == ObjectType.TABLE:
+                table_key = f"{diff.schema_name}.{diff.object_name}"
+                # TABLE_MISSING_SOURCE = Source에 없음 = Target에서 DROP
+                # TABLE_MISSING_TARGET = Target에 없음 = Target에 CREATE
+                if diff.diff_type == DiffType.TABLE_MISSING_SOURCE:
+                    tables_to_drop.add(table_key)
+                elif diff.diff_type == DiffType.TABLE_MISSING_TARGET:
+                    tables_to_create.add(table_key)
+        
+        if not tables_to_drop:
+            return differences
+        
+        # Log filtered tables
+        logger.info(f"Tables to be dropped: {tables_to_drop}")
+        
+        # Filter out redundant changes
+        filtered = []
+        skipped_count = 0
+        
+        for diff in differences:
+            table_key = f"{diff.schema_name}.{diff.object_name}"
+            
+            # Keep table-level changes
+            if diff.object_type == ObjectType.TABLE:
+                filtered.append(diff)
+                continue
+            
+            # Skip changes for tables that will be dropped
+            if table_key in tables_to_drop:
+                skipped_count += 1
+                logger.debug(f"Skipping {diff.diff_type} for {table_key}.{diff.sub_object_name} (table will be dropped)")
+                continue
+            
+            filtered.append(diff)
+        
+        if skipped_count > 0:
+            self.warnings.append(f"Skipped {skipped_count} changes for tables that will be dropped")
+            logger.info(f"Filtered out {skipped_count} redundant changes for tables being dropped")
+        
+        return filtered
     
     def _topological_sort(self) -> List[Difference]:
         """Sort differences considering dependencies"""
@@ -101,11 +279,13 @@ class SyncScriptGenerator:
             DiffType.INDEX_COLUMNS_CHANGED: self._gen_recreate_index,
             DiffType.INDEX_TYPE_CHANGED: self._gen_recreate_index,
             DiffType.INDEX_UNIQUE_CHANGED: self._gen_recreate_index,
+            DiffType.INDEX_RENAMED: self._gen_rename_index,
             
             # Constraints
             DiffType.CONSTRAINT_MISSING_SOURCE: self._gen_drop_constraint,
             DiffType.CONSTRAINT_MISSING_TARGET: self._gen_create_constraint,
             DiffType.CONSTRAINT_DEFINITION_CHANGED: self._gen_recreate_constraint,
+            DiffType.CONSTRAINT_RENAMED: self._gen_rename_constraint,
         }
         
         generator = generators.get(diff.diff_type)
@@ -119,22 +299,62 @@ class SyncScriptGenerator:
         """Generate CREATE TABLE statement"""
         table_name = f"`{diff.schema_name}`.`{diff.object_name}`"
         
-        # Check if we have table definition in target_value
-        if diff.target_value and isinstance(diff.target_value, dict):
+        # Check if we have table definition in source_value or target_value
+        table_data = diff.source_value or diff.target_value
+        
+        if table_data and isinstance(table_data, dict):
             # Extract table structure
-            columns = diff.target_value.get("columns", [])
-            if columns:
+            columns = table_data.get("columns", {})
+            engine = table_data.get("engine", "InnoDB")
+            collation = table_data.get("collation", "")
+            
+            if columns and isinstance(columns, dict):
                 col_defs = []
-                for col in columns:
-                    if isinstance(col, dict):
-                        col_name = col.get("column_name", "unknown")
-                        col_type = col.get("column_type", "VARCHAR(255)")
-                        nullable = "NULL" if col.get("is_nullable", True) else "NOT NULL"
-                        default = f"DEFAULT {col.get('column_default')}" if col.get("column_default") else ""
-                        col_defs.append(f"`{col_name}` {col_type} {nullable} {default}".strip())
+                primary_keys = []
+                
+                # Sort columns by ordinal_position
+                sorted_columns = sorted(
+                    columns.items(), 
+                    key=lambda x: x[1].get("ordinal_position", 0) if isinstance(x[1], dict) else 0
+                )
+                
+                for col_name, col_info in sorted_columns:
+                    if isinstance(col_info, dict):
+                        col_type = col_info.get("column_type", "VARCHAR(255)")
+                        nullable = "NULL" if col_info.get("is_nullable", True) else "NOT NULL"
+                        default = ""
+                        if col_info.get("column_default") is not None:
+                            default_val = col_info.get("column_default")
+                            # Quote string defaults, but not expressions like CURRENT_TIMESTAMP
+                            if isinstance(default_val, str) and not default_val.upper().startswith(('CURRENT_', 'NULL')):
+                                default = f"DEFAULT '{default_val}'"
+                            else:
+                                default = f"DEFAULT {default_val}"
+                        extra = col_info.get("extra", "")
+                        if extra and "auto_increment" in extra.lower():
+                            extra = "AUTO_INCREMENT"
+                        else:
+                            extra = ""
+                        
+                        col_def = f"`{col_name}` {col_type} {nullable} {default} {extra}".strip()
+                        # Clean up multiple spaces
+                        col_def = " ".join(col_def.split())
+                        col_defs.append(col_def)
+                        
+                        # Track primary keys
+                        if col_info.get("column_key") == "PRI":
+                            primary_keys.append(f"`{col_name}`")
                 
                 if col_defs:
-                    forward = f"CREATE TABLE {table_name} (\n  " + ",\n  ".join(col_defs) + "\n);"
+                    # Add PRIMARY KEY if exists
+                    if primary_keys:
+                        col_defs.append(f"PRIMARY KEY ({', '.join(primary_keys)})")
+                    
+                    # Build CREATE TABLE statement
+                    engine_clause = f" ENGINE={engine}" if engine else ""
+                    collation_clause = f" COLLATE={collation}" if collation else ""
+                    
+                    forward = f"CREATE TABLE {table_name} (\n  " + ",\n  ".join(col_defs) + f"\n){engine_clause}{collation_clause};"
                     rollback = f"DROP TABLE IF EXISTS {table_name};"
                     return forward, rollback
         
@@ -200,47 +420,135 @@ ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type} NULL;"""
         
         return forward, rollback
     
+    def _build_column_definition(self, col_info: dict, override_type: str = None, override_nullable: bool = None, override_default: str = None) -> str:
+        """Build complete column definition preserving all attributes
+        
+        Args:
+            col_info: Column information dict
+            override_type: Override column type if specified
+            override_nullable: Override nullable if specified (True=NULL, False=NOT NULL)
+            override_default: Override default value if specified (use empty string to clear default)
+        
+        Returns:
+            Complete column definition string
+        """
+        if not isinstance(col_info, dict):
+            return str(col_info) if col_info else "VARCHAR(255)"
+        
+        # Column type
+        col_type = override_type if override_type else col_info.get("column_type", "VARCHAR(255)")
+        
+        # Nullable
+        if override_nullable is not None:
+            nullable = "NULL" if override_nullable else "NOT NULL"
+        else:
+            is_nullable = col_info.get("is_nullable", True)
+            nullable = "NULL" if is_nullable else "NOT NULL"
+        
+        # Default value - check for override
+        default_clause = ""
+        if override_default is not None:
+            default_val = override_default
+        else:
+            default_val = col_info.get("column_default")
+        
+        if default_val is not None:
+            # Handle special cases
+            if str(default_val).upper() in ('CURRENT_TIMESTAMP', 'CURRENT_DATE', 'NULL'):
+                default_clause = f" DEFAULT {default_val}"
+            elif str(default_val).upper().startswith('CURRENT_'):
+                default_clause = f" DEFAULT {default_val}"
+            else:
+                # Quote string values
+                default_clause = f" DEFAULT '{default_val}'"
+        
+        # Extra (AUTO_INCREMENT, ON UPDATE CURRENT_TIMESTAMP, etc.)
+        extra_clause = ""
+        extra = col_info.get("extra", "")
+        if extra:
+            extra_clause = f" {extra}"
+        
+        # Comment - IMPORTANT: MySQL loses comment on MODIFY if not specified
+        comment_clause = ""
+        comment = col_info.get("comment", "")
+        if comment:
+            # Escape single quotes in comment
+            escaped_comment = comment.replace("'", "''")
+            comment_clause = f" COMMENT '{escaped_comment}'"
+        
+        return f"{col_type} {nullable}{default_clause}{extra_clause}{comment_clause}".strip()
+    
     def _gen_alter_column_type(self, diff: Difference) -> Tuple[str, str]:
         """Generate ALTER COLUMN TYPE statement"""
         table_name = f"`{diff.schema_name}`.`{diff.object_name}`"
         column_name = f"`{diff.sub_object_name}`"
         
-        # Extract column type from value
-        target_type = diff.target_value
-        source_type = diff.source_value
+        # Extract column info
+        target_info = diff.target_value if isinstance(diff.target_value, dict) else {}
+        source_info = diff.source_value if isinstance(diff.source_value, dict) else {}
         
-        if isinstance(target_type, dict):
-            target_type = target_type.get("column_type", "VARCHAR(255)")
-        if isinstance(source_type, dict):
-            source_type = source_type.get("column_type", "VARCHAR(255)")
+        target_type = target_info.get("column_type", diff.target_value) if target_info else diff.target_value
+        source_type = source_info.get("column_type", diff.source_value) if source_info else diff.source_value
+        
+        # Build complete column definition with new type but preserving other attributes
+        # For forward: use target type but preserve source's other attributes (comment, etc.)
+        forward_def = self._build_column_definition(source_info, override_type=target_type) if source_info else target_type
+        rollback_def = self._build_column_definition(source_info) if source_info else source_type
         
         forward = f"""-- Modify Column Type: {column_name}
 -- From: {source_type}
 -- To: {target_type}
 -- WARNING: Data conversion may be required
-ALTER TABLE {table_name} MODIFY COLUMN {column_name} {target_type};"""
+ALTER TABLE {table_name} MODIFY COLUMN {column_name} {forward_def};"""
         
         rollback = f"""-- Rollback Column Type: {column_name}
 -- From: {target_type}
 -- To: {source_type}
-ALTER TABLE {table_name} MODIFY COLUMN {column_name} {source_type};"""
+ALTER TABLE {table_name} MODIFY COLUMN {column_name} {rollback_def};"""
         
         return forward, rollback
     
     def _gen_alter_column_default(self, diff: Difference) -> Tuple[str, str]:
-        """Generate ALTER COLUMN DEFAULT statement"""
+        """Generate ALTER COLUMN DEFAULT statement using MODIFY COLUMN (MySQL syntax)"""
         table_name = f"`{diff.schema_name}`.`{diff.object_name}`"
         column_name = f"`{diff.sub_object_name}`"
         
-        if diff.target_value:
-            forward = f"ALTER TABLE {table_name} ALTER COLUMN {column_name} SET DEFAULT {diff.target_value};"
-        else:
-            forward = f"ALTER TABLE {table_name} ALTER COLUMN {column_name} DROP DEFAULT;"
+        # Get column info - source_value and target_value could be dict or string
+        source_info = diff.source_value if isinstance(diff.source_value, dict) else {}
+        target_info = diff.target_value if isinstance(diff.target_value, dict) else {}
         
-        if diff.source_value:
-            rollback = f"ALTER TABLE {table_name} ALTER COLUMN {column_name} SET DEFAULT {diff.source_value};"
+        # If we have full column info, use _build_column_definition
+        if source_info and target_info:
+            # Build forward: use target's default with source's other attributes
+            forward_def = self._build_column_definition(
+                source_info, 
+                override_default=target_info.get('column_default')
+            )
+            # Build rollback: use source's default
+            rollback_def = self._build_column_definition(source_info)
+            
+            target_default = target_info.get('column_default', 'NULL')
+            source_default = source_info.get('column_default', 'NULL')
+            
+            forward = f"""-- Modify Column Default: {column_name}
+-- From: {source_default}
+-- To: {target_default}
+ALTER TABLE {table_name} MODIFY COLUMN {column_name} {forward_def};"""
+            
+            rollback = f"ALTER TABLE {table_name} MODIFY COLUMN {column_name} {rollback_def};"
         else:
-            rollback = f"ALTER TABLE {table_name} ALTER COLUMN {column_name} DROP DEFAULT;"
+            # Fallback for simple value comparison (legacy format)
+            target_default = diff.target_value if diff.target_value else 'NULL'
+            source_default = diff.source_value if diff.source_value else 'NULL'
+            
+            # Cannot generate proper MODIFY without full column info
+            forward = f"""-- Modify Column Default: {column_name}
+-- From: {source_default}
+-- To: {target_default}
+-- WARNING: Full column definition needed. Using ALTER COLUMN (may not work in MySQL).
+ALTER TABLE {table_name} ALTER COLUMN {column_name} SET DEFAULT {target_default};"""
+            
+            rollback = f"ALTER TABLE {table_name} ALTER COLUMN {column_name} SET DEFAULT {source_default};"
         
         return forward, rollback
     
@@ -249,41 +557,35 @@ ALTER TABLE {table_name} MODIFY COLUMN {column_name} {source_type};"""
         table_name = f"`{diff.schema_name}`.`{diff.object_name}`"
         column_name = f"`{diff.sub_object_name}`"
         
-        # Get column type from target_value or source_value (now contains full column info)
-        column_type = "VARCHAR(255)"  # Default fallback
-        if isinstance(diff.target_value, dict) and diff.target_value.get("column_type"):
-            column_type = diff.target_value["column_type"]
-        elif isinstance(diff.source_value, dict) and diff.source_value.get("column_type"):
-            column_type = diff.source_value["column_type"]
+        # Get column info
+        target_info = diff.target_value if isinstance(diff.target_value, dict) else {}
+        source_info = diff.source_value if isinstance(diff.source_value, dict) else {}
         
-        # Determine the nullable state from the column objects
-        target_nullable = None
-        source_nullable = None
+        # Determine the nullable state
+        target_is_nullable = target_info.get("is_nullable", True) if target_info else True
+        source_is_nullable = source_info.get("is_nullable", True) if source_info else True
         
-        if isinstance(diff.target_value, dict):
-            target_nullable = "NULL" if diff.target_value.get("is_nullable") else "NOT NULL"
-        elif isinstance(diff.target_value, str):
-            target_nullable = diff.target_value
+        target_nullable = "NULL" if target_is_nullable else "NOT NULL"
+        source_nullable = "NULL" if source_is_nullable else "NOT NULL"
         
-        if isinstance(diff.source_value, dict):
-            source_nullable = "NULL" if diff.source_value.get("is_nullable") else "NOT NULL"
-        elif isinstance(diff.source_value, str):
-            source_nullable = diff.source_value
+        # Build complete column definition preserving all attributes
+        forward_def = self._build_column_definition(source_info, override_nullable=target_is_nullable) if source_info else f"VARCHAR(255) {target_nullable}"
+        rollback_def = self._build_column_definition(source_info) if source_info else f"VARCHAR(255) {source_nullable}"
         
         # Generate SQL based on target nullable state
-        if target_nullable == "NOT NULL":
+        if not target_is_nullable:
             forward = f"""-- Modify Column Nullable: {column_name}
 -- From: {source_nullable}
 -- To: {target_nullable}
 -- WARNING: Ensure no NULL values exist in column
-ALTER TABLE {table_name} MODIFY COLUMN {column_name} {column_type} NOT NULL;"""
-            rollback = f"ALTER TABLE {table_name} MODIFY COLUMN {column_name} {column_type} NULL;"
+ALTER TABLE {table_name} MODIFY COLUMN {column_name} {forward_def};"""
         else:
             forward = f"""-- Modify Column Nullable: {column_name}
 -- From: {source_nullable}
 -- To: {target_nullable}
-ALTER TABLE {table_name} MODIFY COLUMN {column_name} {column_type} NULL;"""
-            rollback = f"ALTER TABLE {table_name} MODIFY COLUMN {column_name} {column_type} NOT NULL;"
+ALTER TABLE {table_name} MODIFY COLUMN {column_name} {forward_def};"""
+        
+        rollback = f"ALTER TABLE {table_name} MODIFY COLUMN {column_name} {rollback_def};"
         
         return forward, rollback
     
@@ -342,6 +644,43 @@ DROP INDEX `{index_name}` ON {table_name};"""
 DROP INDEX `{index_name}` ON {table_name};"""
         
         rollback = f"-- TODO: RECREATE INDEX `{index_name}` with original definition;"
+        
+        return forward, rollback
+    
+    def _gen_rename_index(self, diff: Difference) -> Tuple[str, str]:
+        """Generate RENAME INDEX statement (MySQL 5.7+)"""
+        table_name = f"`{diff.schema_name}`.`{diff.object_name}`"
+        
+        source_name = diff.sub_object_name  # Original name in source
+        target_name = None
+        
+        # Get target index name
+        if isinstance(diff.target_value, dict):
+            target_name = diff.target_value.get("index_name")
+        
+        if not target_name:
+            # Fallback - shouldn't happen
+            return None, None
+        
+        # Determine which way to rename based on direction
+        # For SOURCE_TO_TARGET: rename target to match source (target DB is modified)
+        # For TARGET_TO_SOURCE: rename source to match target (source DB is modified)
+        if self.direction == SyncDirection.SOURCE_TO_TARGET:
+            # Target DB should have source's name
+            old_name = target_name
+            new_name = source_name
+            comment = f"Rename index to match source: {old_name} → {new_name}"
+        else:
+            # Source DB should have target's name
+            old_name = source_name
+            new_name = target_name
+            comment = f"Rename index to match target: {old_name} → {new_name}"
+        
+        forward = f"""-- {comment}
+-- Table: {table_name}
+ALTER TABLE {table_name} RENAME INDEX `{old_name}` TO `{new_name}`;"""
+        
+        rollback = f"ALTER TABLE {table_name} RENAME INDEX `{new_name}` TO `{old_name}`;"
         
         return forward, rollback
     
@@ -526,11 +865,90 @@ ALTER TABLE {table_name} ADD CONSTRAINT {constraint_name} UNIQUE ({columns});"""
         
         return None, None
     
+    def _gen_rename_constraint(self, diff: Difference) -> Tuple[str, str]:
+        """Generate RENAME constraint statement
+        
+        Note: MySQL doesn't support directly renaming constraints.
+        - UNIQUE constraints are actually indexes, so use RENAME INDEX
+        - FOREIGN KEY must be dropped and recreated
+        """
+        table_name = f"`{diff.schema_name}`.`{diff.object_name}`"
+        
+        source_name = diff.sub_object_name
+        target_name = None
+        constraint_type = None
+        
+        if isinstance(diff.target_value, dict):
+            target_name = diff.target_value.get("constraint_name")
+            constraint_type = diff.target_value.get("constraint_type")
+        
+        if not target_name:
+            return None, None
+        
+        # Determine which way to rename based on direction
+        if self.direction == SyncDirection.SOURCE_TO_TARGET:
+            old_name = target_name
+            new_name = source_name
+        else:
+            old_name = source_name
+            new_name = target_name
+        
+        # UNIQUE constraints are actually indexes in MySQL
+        if constraint_type == "UNIQUE":
+            forward = f"""-- Rename UNIQUE constraint (implemented as index)
+-- {old_name} → {new_name}
+-- Table: {table_name}
+ALTER TABLE {table_name} RENAME INDEX `{old_name}` TO `{new_name}`;"""
+            rollback = f"ALTER TABLE {table_name} RENAME INDEX `{new_name}` TO `{old_name}`;"
+            return forward, rollback
+        
+        # FOREIGN KEY must be dropped and recreated
+        elif constraint_type == "FOREIGN KEY":
+            const_data = diff.source_value if self.direction == SyncDirection.TARGET_TO_SOURCE else diff.target_value
+            if isinstance(const_data, dict):
+                columns = const_data.get("columns", "")
+                ref_schema = const_data.get("referenced_table_schema", "")
+                ref_table = const_data.get("referenced_table_name", "")
+                ref_columns = const_data.get("referenced_columns", "")
+                update_rule = const_data.get("update_rule", "RESTRICT")
+                delete_rule = const_data.get("delete_rule", "RESTRICT")
+                
+                forward = f"""-- Rename FOREIGN KEY constraint (drop and recreate)
+-- {old_name} → {new_name}
+-- Table: {table_name}
+ALTER TABLE {table_name} DROP FOREIGN KEY `{old_name}`;
+ALTER TABLE {table_name} ADD CONSTRAINT `{new_name}` FOREIGN KEY ({columns}) 
+    REFERENCES `{ref_schema}`.`{ref_table}` ({ref_columns}) 
+    ON UPDATE {update_rule} ON DELETE {delete_rule};"""
+                
+                rollback = f"""ALTER TABLE {table_name} DROP FOREIGN KEY `{new_name}`;
+ALTER TABLE {table_name} ADD CONSTRAINT `{old_name}` FOREIGN KEY ({columns}) 
+    REFERENCES `{ref_schema}`.`{ref_table}` ({ref_columns}) 
+    ON UPDATE {update_rule} ON DELETE {delete_rule};"""
+                return forward, rollback
+        
+        # Other constraints - generic drop and recreate
+        forward = f"""-- Rename constraint (drop and recreate)
+-- {old_name} → {new_name}
+ALTER TABLE {table_name} DROP CONSTRAINT `{old_name}`;
+-- TODO: Add constraint with new name `{new_name}`;"""
+        rollback = f"-- TODO: Reverse constraint rename"
+        
+        return forward, rollback
+    
     def _format_script(self, statements: List[str], title: str) -> str:
         """Format SQL script with header and sections"""
+        direction_desc = (
+            "Making TARGET database match SOURCE" 
+            if self.direction == SyncDirection.SOURCE_TO_TARGET 
+            else "Making SOURCE database match TARGET"
+        )
+        
         script = f"""-- {title}
 -- Generated by Schema Diff Pro
 -- Comparison ID: {self.comparison_id}
+-- Direction: {self.direction.value}
+-- Description: {direction_desc}
 -- Generated at: {datetime.now().isoformat()}
 -- Total statements: {len(statements)}
 

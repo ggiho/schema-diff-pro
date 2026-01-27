@@ -1,14 +1,9 @@
+from __future__ import annotations
+
 from pydantic import BaseModel, Field
-from typing import Optional, List, Dict, Any, Literal, TYPE_CHECKING, Union
+from typing import Optional, List, Dict, Any, Literal, Union, TYPE_CHECKING
 from datetime import datetime
 from enum import Enum
-
-# Import SSH models
-try:
-    from .ssh_tunnel import DatabaseConfigWithSSH
-except ImportError:
-    # Fallback for when ssh_tunnel is not available
-    DatabaseConfigWithSSH = DatabaseConfig
 
 
 class DiffType(str, Enum):
@@ -35,11 +30,15 @@ class DiffType(str, Enum):
     INDEX_COLUMNS_CHANGED = "index_columns_changed"
     INDEX_TYPE_CHANGED = "index_type_changed"
     INDEX_UNIQUE_CHANGED = "index_unique_changed"
+    INDEX_RENAMED = "index_renamed"  # Same columns but different name
+    INDEX_DUPLICATE_SOURCE = "index_duplicate_source"  # Duplicate index in source
+    INDEX_DUPLICATE_TARGET = "index_duplicate_target"  # Duplicate index in target
     
     # Constraint level
     CONSTRAINT_MISSING_SOURCE = "constraint_missing_source"
     CONSTRAINT_MISSING_TARGET = "constraint_missing_target"
     CONSTRAINT_DEFINITION_CHANGED = "constraint_definition_changed"
+    CONSTRAINT_RENAMED = "constraint_renamed"  # Same definition but different name
     
     # Procedure/Function level
     ROUTINE_MISSING_SOURCE = "routine_missing_source"
@@ -78,6 +77,12 @@ class ObjectType(str, Enum):
     VIEW = "view"
     TRIGGER = "trigger"
     EVENT = "event"
+
+
+class SyncDirection(str, Enum):
+    """Direction for sync script generation"""
+    SOURCE_TO_TARGET = "source_to_target"  # Make target like source (default)
+    TARGET_TO_SOURCE = "target_to_source"  # Make source like target
 
 
 class DatabaseConfig(BaseModel):
@@ -210,3 +215,11 @@ class SyncScript(BaseModel):
     # Validation
     validated: bool = False
     validation_errors: List[str] = Field(default_factory=list)
+
+
+# Import and rebuild models to resolve forward references
+from .ssh_tunnel import DatabaseConfigWithSSH  # noqa: E402
+
+# Rebuild models to resolve forward references (Pydantic v2)
+ComparisonResult.model_rebuild()
+ComparisonProfile.model_rebuild()

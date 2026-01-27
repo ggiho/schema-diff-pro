@@ -52,7 +52,7 @@ export default function HomePage() {
     }
   }
 
-  const handleComparisonComplete = (result: any) => {
+  const handleComparisonComplete = (result: Parameters<typeof setCurrentComparison>[1]) => {
     setIsComparing(false)
     setCurrentComparison(currentComparisonId, result)
   }

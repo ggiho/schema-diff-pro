@@ -19,6 +19,8 @@ router = APIRouter()
 
 # In-memory storage for results (using JSON file storage for persistence)
 comparison_results: Dict[str, ComparisonResult] = {}
+# Store connection configs for script execution
+comparison_connections: Dict[str, Dict[str, Any]] = {}
 history_manager = HistoryManager()
 
 
@@ -72,6 +74,12 @@ async def start_comparison(
             if result:
                 # Store result
                 comparison_results[comparison_id] = result
+                
+                # Store connection configs for later script execution
+                comparison_connections[comparison_id] = {
+                    "source": source_config,
+                    "target": target_config
+                }
                 
                 # Add to history
                 history_manager.add_comparison(
@@ -172,6 +180,103 @@ async def cancel_comparison(comparison_id: str) -> Dict[str, str]:
             return {"status": "cancelled"}
     
     return {"status": "not_found"}
+
+
+@router.post("/{comparison_id}/rerun")
+async def rerun_comparison(comparison_id: str) -> Dict[str, str]:
+    """Re-run a comparison using stored connection configs"""
+    if comparison_id not in comparison_connections:
+        raise HTTPException(
+            status_code=404, 
+            detail="Connection information not found. Please start a new comparison."
+        )
+    
+    connections = comparison_connections[comparison_id]
+    source_config = connections["source"]
+    target_config = connections["target"]
+    
+    logger.info("=== COMPARISON RE-RUN ===")
+    logger.info(f"Source config: {source_config.host}:{source_config.port}/{source_config.database}")
+    logger.info(f"Target config: {target_config.host}:{target_config.port}/{target_config.database}")
+    logger.info(f"Source has SSH tunnel: {hasattr(source_config, 'ssh_tunnel') and source_config.ssh_tunnel and source_config.ssh_tunnel.enabled}")
+    logger.info(f"Target has SSH tunnel: {hasattr(target_config, 'ssh_tunnel') and target_config.ssh_tunnel and target_config.ssh_tunnel.enabled}")
+    
+    # Create comparison options
+    options = ComparisonOptions()
+    
+    # If database is specified in config, limit comparison to that schema only
+    included_schemas = []
+    if source_config.database:
+        included_schemas.append(source_config.database)
+    if target_config.database and target_config.database not in included_schemas:
+        included_schemas.append(target_config.database)
+    
+    if included_schemas:
+        options.included_schemas = included_schemas
+        logger.info(f"Re-run limiting comparison to schemas: {included_schemas}")
+    
+    engine = ComparisonEngine()
+    
+    # Generate new comparison ID
+    new_comparison_id = None
+    
+    async def run_comparison(comp_id: str):
+        try:
+            from main import manager
+            
+            result = None
+            async for update in engine.compare_databases(source_config, target_config, options):
+                if isinstance(update, ComparisonProgress):
+                    await manager.send_progress(comp_id, update.dict())
+                else:
+                    result = update
+            
+            if result:
+                comparison_results[comp_id] = result
+                comparison_connections[comp_id] = {
+                    "source": source_config,
+                    "target": target_config
+                }
+                
+                history_manager.add_comparison(
+                    comp_id,
+                    source_config,
+                    target_config,
+                    len(result.differences),
+                    result.summary
+                )
+                
+                await manager.send_complete(
+                    comp_id,
+                    f"/api/v1/comparison/{comp_id}/result"
+                )
+        except Exception as e:
+            logger.error(f"Comparison re-run failed: {str(e)}")
+            from main import manager
+            await manager.send_error(comp_id, str(e))
+    
+    async def start_rerun_task():
+        nonlocal new_comparison_id
+        async for update in engine.compare_databases(source_config, target_config, options):
+            if isinstance(update, ComparisonProgress):
+                new_comparison_id = update.comparison_id
+                break
+        
+        if new_comparison_id:
+            task = asyncio.create_task(run_comparison(new_comparison_id))
+            from main import manager
+            manager.register_task(new_comparison_id, task)
+    
+    await start_rerun_task()
+    
+    if not new_comparison_id:
+        raise HTTPException(status_code=500, detail="Failed to start comparison re-run")
+    
+    return {
+        "comparison_id": new_comparison_id,
+        "status": "started",
+        "websocket_url": f"/ws/comparison/{new_comparison_id}"
+    }
 
 
 @router.get("/recent/list")

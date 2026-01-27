@@ -1,10 +1,11 @@
-from typing import Dict, Any, List
+from typing import Dict, Any, List, AsyncGenerator, Set, Tuple
+import asyncio
 import logging
 from sqlalchemy import text
 
 from .base_comparer import BaseComparer
 from models.base import (
-    Difference, ObjectType, DiffType, SeverityLevel
+    Difference, ObjectType, DiffType, SeverityLevel, ComparisonProgress
 )
 from core.database import DatabaseConnection
 from core.config import settings
@@ -48,8 +49,9 @@ class ConstraintComparer(BaseComparer):
             rc.DELETE_RULE
         """)
         
-        # Primary keys and unique constraints
-        pk_unique_query = text("""
+        # Primary keys only (UNIQUE constraints are handled by IndexComparer as UNIQUE INDEX)
+        # This avoids duplicate detection since MySQL implements UNIQUE constraints as UNIQUE indexes
+        pk_query = text("""
         SELECT 
             tc.CONSTRAINT_SCHEMA,
             tc.TABLE_NAME,
@@ -67,7 +69,7 @@ class ConstraintComparer(BaseComparer):
             AND tc.CONSTRAINT_NAME = kcu.CONSTRAINT_NAME
             AND tc.TABLE_NAME = kcu.TABLE_NAME
         WHERE tc.CONSTRAINT_SCHEMA NOT IN :system_dbs
-            AND tc.CONSTRAINT_TYPE IN ('PRIMARY KEY', 'UNIQUE')
+            AND tc.CONSTRAINT_TYPE = 'PRIMARY KEY'
         GROUP BY 
             tc.CONSTRAINT_SCHEMA,
             tc.TABLE_NAME,
@@ -124,10 +126,10 @@ class ConstraintComparer(BaseComparer):
         except Exception as e:
             logger.warning(f"Error fetching foreign keys: {e}")
         
-        # Get primary keys and unique constraints
+        # Get primary keys (UNIQUE is handled by IndexComparer)
         try:
             pk_results = await connection.execute_query(
-                pk_unique_query,
+                pk_query,
                 {"system_dbs": tuple(settings.SYSTEM_DATABASES)}
             )
             
@@ -186,15 +188,171 @@ class ConstraintComparer(BaseComparer):
         
         return constraints
     
+    def _create_constraint_signature(self, constraint: Dict[str, Any]) -> str:
+        """Create a signature for a constraint based on its definition (not name)"""
+        # For UNIQUE and PRIMARY KEY: table + type + columns
+        # For FOREIGN KEY: table + type + columns + referenced table/columns + rules
+        base = f"{constraint['schema_name']}.{constraint['table_name']}|{constraint['constraint_type']}|{constraint['columns']}"
+        
+        if constraint['constraint_type'] == 'FOREIGN KEY':
+            base += f"|{constraint['referenced_table_schema']}.{constraint['referenced_table_name']}|{constraint['referenced_columns']}"
+            base += f"|{constraint['update_rule']}|{constraint['delete_rule']}"
+        
+        return base
+    
+    async def compare(self) -> AsyncGenerator[ComparisonProgress, None]:
+        """Override compare to detect renamed constraints"""
+        # Discovery phase
+        yield ComparisonProgress(
+            comparison_id=self.comparison_id,
+            phase="discovery",
+            current=0,
+            total=2,
+            current_object=f"Discovering {self.object_type.value}s in source",
+            message=f"Starting {self.object_type.value} discovery"
+        )
+        
+        source_task = asyncio.create_task(self.discover_objects(self.source_conn))
+        target_task = asyncio.create_task(self.discover_objects(self.target_conn))
+        
+        yield ComparisonProgress(
+            comparison_id=self.comparison_id,
+            phase="discovery",
+            current=1,
+            total=2,
+            current_object=f"Discovering {self.object_type.value}s in both databases"
+        )
+        
+        source_objects = await source_task
+        target_objects = await target_task
+        
+        yield ComparisonProgress(
+            comparison_id=self.comparison_id,
+            phase="discovery",
+            current=2,
+            total=2,
+            message=f"Discovery complete. Found {len(source_objects)} source and {len(target_objects)} target {self.object_type.value}s"
+        )
+        
+        # Build signature-based lookup for rename detection
+        source_by_signature: Dict[str, Dict[str, Any]] = {}
+        target_by_signature: Dict[str, Dict[str, Any]] = {}
+        
+        for key, const in source_objects.items():
+            sig = self._create_constraint_signature(const)
+            source_by_signature[sig] = const
+            logger.debug(f"Source constraint: {key} -> signature: {sig}")
+        
+        for key, const in target_objects.items():
+            sig = self._create_constraint_signature(const)
+            target_by_signature[sig] = const
+            logger.debug(f"Target constraint: {key} -> signature: {sig}")
+        
+        # Log matching info
+        for sig in source_by_signature:
+            if sig in target_by_signature:
+                src = source_by_signature[sig]
+                tgt = target_by_signature[sig]
+                if src['constraint_name'] != tgt['constraint_name']:
+                    logger.info(f"Detected constraint rename: {src['constraint_name']} -> {tgt['constraint_name']} (sig: {sig})")
+        
+        # Track processed constraints to avoid duplicates
+        processed_source: Set[str] = set()
+        processed_target: Set[str] = set()
+        renamed_pairs: List[Tuple[Dict, Dict]] = []
+        
+        # First pass: detect renames (same signature, different name)
+        for sig, source_const in source_by_signature.items():
+            if sig in target_by_signature:
+                target_const = target_by_signature[sig]
+                source_key = f"{source_const['schema_name']}.{source_const['table_name']}.{source_const['constraint_name']}"
+                target_key = f"{target_const['schema_name']}.{target_const['table_name']}.{target_const['constraint_name']}"
+                
+                # Same signature but different name = rename
+                if source_const['constraint_name'] != target_const['constraint_name']:
+                    # Skip PRIMARY KEY - can't be renamed
+                    if source_const['constraint_type'] != 'PRIMARY KEY':
+                        renamed_pairs.append((source_const, target_const))
+                    processed_source.add(source_key)
+                    processed_target.add(target_key)
+                else:
+                    # Same name and same signature = match
+                    processed_source.add(source_key)
+                    processed_target.add(target_key)
+        
+        # Comparison phase
+        total_objects = len(set(list(source_objects.keys()) + list(target_objects.keys())))
+        
+        if total_objects > 0:
+            current = 0
+            
+            # Process renamed constraints
+            for source_const, target_const in renamed_pairs:
+                current += 1
+                yield ComparisonProgress(
+                    comparison_id=self.comparison_id,
+                    phase="comparison",
+                    current=current,
+                    total=total_objects,
+                    current_object=f"{source_const['constraint_name']} → {target_const['constraint_name']}",
+                    message=f"Detected constraint rename"
+                )
+                
+                self.differences.append(Difference(
+                    diff_type=DiffType.CONSTRAINT_RENAMED,
+                    severity=SeverityLevel.LOW,
+                    object_type=ObjectType.CONSTRAINT,
+                    schema_name=source_const['schema_name'],
+                    object_name=source_const['table_name'],
+                    sub_object_name=source_const['constraint_name'],
+                    source_value=source_const,
+                    target_value=target_const,
+                    description=f"Constraint renamed: {source_const['constraint_name']} → {target_const['constraint_name']}",
+                    can_auto_fix=True,
+                    fix_order=self.get_fix_order()
+                ))
+            
+            # Process remaining constraints
+            for obj_name in set(list(source_objects.keys()) + list(target_objects.keys())):
+                if obj_name in processed_source or obj_name in processed_target:
+                    continue
+                
+                current += 1
+                yield ComparisonProgress(
+                    comparison_id=self.comparison_id,
+                    phase="comparison",
+                    current=current,
+                    total=total_objects,
+                    current_object=obj_name,
+                    message=f"Comparing {self.object_type.value}: {obj_name}"
+                )
+                
+                source_obj = source_objects.get(obj_name)
+                target_obj = target_objects.get(obj_name)
+                
+                if source_obj and target_obj:
+                    obj_differences = await self.compare_single_object(obj_name, source_obj, target_obj)
+                    self.differences.extend(obj_differences)
+                elif source_obj and not target_obj:
+                    source_key = f"{source_obj['schema_name']}.{source_obj['table_name']}.{source_obj['constraint_name']}"
+                    if source_key not in processed_source:
+                        self.differences.append(self.create_missing_difference(
+                            obj_name, source_obj, "target"
+                        ))
+                elif not source_obj and target_obj:
+                    target_key = f"{target_obj['schema_name']}.{target_obj['table_name']}.{target_obj['constraint_name']}"
+                    if target_key not in processed_target:
+                        self.differences.append(self.create_missing_difference(
+                            obj_name, target_obj, "source"
+                        ))
+    
     async def compare_objects(
         self,
         source_objects: Dict[str, Any],
         target_objects: Dict[str, Any]
     ) -> List[Difference]:
         """Compare discovered objects and return differences"""
-        # This method is required by the abstract base class
-        # The actual comparison logic is handled in the base class compare() method
-        # which calls compare_single_object for each object
+        # Handled in overridden compare() method
         return []
     
     async def compare_single_object(

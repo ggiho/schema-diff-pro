@@ -214,6 +214,22 @@ class DatabaseConnection:
             await self._engine.dispose()
             self._engine = None
     
+    async def execute_ddl(self, statement: str) -> bool:
+        """Execute a DDL statement (CREATE, DROP, ALTER, etc.) that doesn't return rows"""
+        try:
+            engine = await self.get_engine()
+            from sqlalchemy import text
+            
+            async with engine.connect() as conn:
+                sql_stmt = text(statement) if isinstance(statement, str) else statement
+                await conn.execute(sql_stmt)
+                await conn.commit()
+            
+            return True
+        except Exception as e:
+            logger.error(f"DDL execution failed: {e}")
+            raise
+    
     @asynccontextmanager
     async def get_session(self):
         """Get async database session"""

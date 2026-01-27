@@ -142,9 +142,13 @@ export enum DiffType {
   INDEX_COLUMNS_CHANGED = "index_columns_changed",
   INDEX_TYPE_CHANGED = "index_type_changed",
   INDEX_UNIQUE_CHANGED = "index_unique_changed",
+  INDEX_RENAMED = "index_renamed",
+  INDEX_DUPLICATE_SOURCE = "index_duplicate_source",
+  INDEX_DUPLICATE_TARGET = "index_duplicate_target",
   CONSTRAINT_MISSING_SOURCE = "constraint_missing_source",
   CONSTRAINT_MISSING_TARGET = "constraint_missing_target",
   CONSTRAINT_DEFINITION_CHANGED = "constraint_definition_changed",
+  CONSTRAINT_RENAMED = "constraint_renamed",
   ROUTINE_MISSING_SOURCE = "routine_missing_source",
   ROUTINE_MISSING_TARGET = "routine_missing_target",
   ROUTINE_DEFINITION_CHANGED = "routine_definition_changed",
@@ -175,6 +179,15 @@ export enum ObjectType {
   VIEW = "view",
   TRIGGER = "trigger",
   EVENT = "event",
+}
+
+export enum SyncDirection {
+  SOURCE_TO_TARGET = "source_to_target",  // Make target DB match source (default)
+  TARGET_TO_SOURCE = "target_to_source",  // Make source DB match target
+}
+
+export interface SyncScriptRequest {
+  direction: SyncDirection
 }
 
 export interface Difference {
@@ -233,10 +246,146 @@ export interface SyncScript {
   forward_script: string
   rollback_script: string
   warnings: string[]
-  estimated_impact: any
+  estimated_impact: SyncImpact
   estimated_duration?: number
   requires_downtime: boolean
   data_loss_risk: boolean
   validated: boolean
   validation_errors: string[]
+}
+
+// ============================================================================
+// Additional API Response Types
+// Linus: "any 쓸 거면 TypeScript 왜 써?"
+// ============================================================================
+
+export interface SyncImpact {
+  tables_affected: number
+  columns_affected: number
+  indexes_affected: number
+  constraints_affected: number
+  estimated_rows_affected?: number
+  operations: SyncOperation[]
+}
+
+export interface SyncOperation {
+  type: 'CREATE' | 'ALTER' | 'DROP'
+  object_type: ObjectType
+  object_name: string
+  sql: string
+  risk_level: SeverityLevel
+}
+
+export interface ComparisonStartResponse {
+  comparison_id: string
+  status: 'started' | 'queued'
+  message?: string
+}
+
+export interface ComparisonStatus {
+  comparison_id: string
+  status: 'pending' | 'running' | 'completed' | 'failed'
+  progress?: ComparisonProgress
+  error?: string
+}
+
+export interface SyncPreview {
+  comparison_id: string
+  changes: SyncChange[]
+  warnings: string[]
+  can_execute: boolean
+}
+
+export interface SyncChange {
+  object_type: ObjectType
+  object_name: string
+  change_type: 'create' | 'alter' | 'drop'
+  description: string
+  sql_preview: string
+  risk_level: SeverityLevel
+}
+
+export interface SyncValidationResult {
+  valid: boolean
+  errors: ValidationError[]
+  warnings: string[]
+}
+
+export interface ValidationError {
+  code: string
+  message: string
+  location?: string
+}
+
+export interface ComparisonProfile {
+  id?: string
+  name: string
+  description?: string
+  source_config: DatabaseConfig | DatabaseConfigWithSSH
+  target_config: DatabaseConfig | DatabaseConfigWithSSH
+  comparison_options: ComparisonOptions
+  created_at?: string
+  updated_at?: string
+  last_run?: string
+  schedule_enabled: boolean
+  schedule_cron?: string
+  notification_email?: string
+  notification_webhook?: string
+  notify_on_differences: boolean
+  notify_on_errors: boolean
+}
+
+export interface RecentComparison {
+  id: string
+  source: {
+    display_name: string
+  }
+  target: {
+    display_name: string
+  }
+  timestamp: string
+  difference_count: number
+}
+
+// Script Execution Types
+export interface ScriptRiskAnalysis {
+  has_drop_table: boolean
+  has_drop_column: boolean
+  has_drop_index: boolean
+  has_drop_constraint: boolean
+  has_truncate: boolean
+  has_delete: boolean
+  drop_tables: string[]
+  drop_columns: string[]
+  risk_level: 'low' | 'medium' | 'high'
+  warnings: string[]
+}
+
+export interface ScriptAnalysisResponse {
+  comparison_id: string
+  target_database: 'source' | 'target'
+  risks: ScriptRiskAnalysis
+  requires_confirmation: boolean
+}
+
+export interface ExecuteScriptRequest {
+  script: string
+  target_database: 'source' | 'target'
+}
+
+export interface StatementResult {
+  index: number
+  statement: string
+  success: boolean
+  error: string | null
+  rows_affected: number
+}
+
+export interface ExecuteScriptResponse {
+  success: boolean
+  executed_statements: number
+  failed_statements: number
+  results: StatementResult[]
+  warnings: string[]
+  errors: string[]
 }

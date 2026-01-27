@@ -1,17 +1,24 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
-import { DatabaseConfig, ComparisonOptions } from '@/types'
+import { 
+  DatabaseConfig, 
+  DatabaseConfigWithSSH, 
+  ComparisonOptions, 
+  ComparisonResult 
+} from '@/types'
+
+type DatabaseConfiguration = DatabaseConfig | DatabaseConfigWithSSH
 
 interface ComparisonStore {
-  sourceConfig: DatabaseConfig | null
-  targetConfig: DatabaseConfig | null
+  sourceConfig: DatabaseConfiguration | null
+  targetConfig: DatabaseConfiguration | null
   comparisonOptions: ComparisonOptions
   currentComparisonId: string | null
-  currentComparisonResult: any | null
-  setSourceConfig: (config: DatabaseConfig | null) => void
-  setTargetConfig: (config: DatabaseConfig | null) => void
+  currentComparisonResult: ComparisonResult | null
+  setSourceConfig: (config: DatabaseConfiguration | null) => void
+  setTargetConfig: (config: DatabaseConfiguration | null) => void
   setComparisonOptions: (options: ComparisonOptions) => void
-  setCurrentComparison: (id: string | null, result: any | null) => void
+  setCurrentComparison: (id: string | null, result: ComparisonResult | null) => void
   clearComparison: () => void
 }
 

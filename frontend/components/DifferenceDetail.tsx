@@ -2,13 +2,14 @@
 
 import { Difference, ObjectType, DiffType } from '@/types'
 import { 
-  Database, Table, Key, Index, 
+  Database, 
   ArrowRight, Code, Copy, CheckCircle,
-  AlertTriangle, Plus, Minus, Edit,
-  FileText
+  AlertTriangle, Plus, Minus, Edit
 } from 'lucide-react'
 import { Button } from './ui/button'
 import { toast } from 'react-hot-toast'
+import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
+import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism'
 
 interface DifferenceDetailProps {
   difference: Difference
@@ -18,6 +19,55 @@ export function DifferenceDetail({ difference }: DifferenceDetailProps) {
   const copyToClipboard = (text: string) => {
     navigator.clipboard.writeText(text)
     toast.success('Copied to clipboard')
+  }
+
+  // Build complete column definition preserving all attributes (COMMENT, DEFAULT, etc.)
+  const buildColumnDefinition = (
+    colInfo: any, 
+    overrideType?: string, 
+    overrideNullable?: boolean
+  ): string => {
+    if (!colInfo || typeof colInfo !== 'object') {
+      return colInfo ? String(colInfo) : 'VARCHAR(255)'
+    }
+
+    // Column type
+    const colType = overrideType || colInfo.column_type || colInfo.data_type || 'VARCHAR(255)'
+
+    // Nullable
+    let nullable: string
+    if (overrideNullable !== undefined) {
+      nullable = overrideNullable ? 'NULL' : 'NOT NULL'
+    } else {
+      nullable = colInfo.is_nullable ? 'NULL' : 'NOT NULL'
+    }
+
+    // Default value
+    let defaultClause = ''
+    const defaultVal = colInfo.column_default
+    if (defaultVal !== null && defaultVal !== undefined) {
+      const defaultStr = String(defaultVal).toUpperCase()
+      if (defaultStr === 'CURRENT_TIMESTAMP' || defaultStr === 'CURRENT_DATE' || defaultStr === 'NULL' || defaultStr.startsWith('CURRENT_')) {
+        defaultClause = ` DEFAULT ${defaultVal}`
+      } else {
+        defaultClause = ` DEFAULT '${defaultVal}'`
+      }
+    }
+
+    // Extra (AUTO_INCREMENT, ON UPDATE CURRENT_TIMESTAMP, etc.)
+    let extraClause = ''
+    if (colInfo.extra) {
+      extraClause = ` ${colInfo.extra}`
+    }
+
+    // Comment - IMPORTANT: MySQL loses comment on MODIFY if not specified
+    let commentClause = ''
+    if (colInfo.comment) {
+      const escapedComment = colInfo.comment.replace(/'/g, "''")
+      commentClause = ` COMMENT '${escapedComment}'`
+    }
+
+    return `${colType} ${nullable}${defaultClause}${extraClause}${commentClause}`.trim()
   }
 
   const formatValue = (value: any, type: ObjectType) => {
@@ -167,6 +217,72 @@ export function DifferenceDetail({ difference }: DifferenceDetailProps) {
     )
   }
 
+  // Generate full CREATE TABLE SQL from table data
+  const generateCreateTableSQL = (tableData: any, tableName: string, targetDb: 'SOURCE' | 'TARGET') => {
+    if (!tableData || typeof tableData !== 'object') {
+      return `-- Execute on ${targetDb} database:\nCREATE TABLE ${tableName} (\n  -- Table structure not available\n) ENGINE=InnoDB;`
+    }
+
+    const columns = tableData.columns
+    const engine = tableData.engine || 'InnoDB'
+    const collation = tableData.collation || ''
+
+    if (!columns || typeof columns !== 'object' || Object.keys(columns).length === 0) {
+      return `-- Execute on ${targetDb} database:\nCREATE TABLE ${tableName} (\n  -- Column information not available\n) ENGINE=${engine}${collation ? ` COLLATE=${collation}` : ''};`
+    }
+
+    // Sort columns by ordinal_position
+    const sortedColumns = Object.entries(columns).sort((a: any, b: any) => {
+      const posA = a[1]?.ordinal_position || 0
+      const posB = b[1]?.ordinal_position || 0
+      return posA - posB
+    })
+
+    const colDefs: string[] = []
+    const primaryKeys: string[] = []
+
+    for (const [colName, colInfo] of sortedColumns) {
+      if (typeof colInfo !== 'object') continue
+
+      const col = colInfo as any
+      const colType = col.column_type || col.data_type || 'VARCHAR(255)'
+      const nullable = col.is_nullable ? 'NULL' : 'NOT NULL'
+      
+      let defaultClause = ''
+      if (col.column_default !== null && col.column_default !== undefined) {
+        const defaultVal = col.column_default
+        // Quote string defaults, but not expressions like CURRENT_TIMESTAMP
+        if (typeof defaultVal === 'string' && !defaultVal.toUpperCase().startsWith('CURRENT_') && defaultVal.toUpperCase() !== 'NULL') {
+          defaultClause = ` DEFAULT '${defaultVal}'`
+        } else {
+          defaultClause = ` DEFAULT ${defaultVal}`
+        }
+      }
+
+      let extra = ''
+      if (col.extra && col.extra.toLowerCase().includes('auto_increment')) {
+        extra = ' AUTO_INCREMENT'
+      }
+
+      colDefs.push(`\`${colName}\` ${colType} ${nullable}${defaultClause}${extra}`)
+
+      // Track primary keys
+      if (col.column_key === 'PRI') {
+        primaryKeys.push(`\`${colName}\``)
+      }
+    }
+
+    // Add PRIMARY KEY if exists
+    if (primaryKeys.length > 0) {
+      colDefs.push(`PRIMARY KEY (${primaryKeys.join(', ')})`)
+    }
+
+    const engineClause = engine ? ` ENGINE=${engine}` : ''
+    const collationClause = collation ? ` COLLATE=${collation}` : ''
+
+    return `-- Execute on ${targetDb} database:\nCREATE TABLE ${tableName} (\n  ${colDefs.join(',\n  ')}\n)${engineClause}${collationClause};`
+  }
+
   const getDiffTypeIcon = () => {
     if (difference.diff_type.includes('MISSING_TARGET') || difference.diff_type.includes('ADDED')) {
       return <Plus className="h-4 w-4 text-green-600" />
@@ -178,6 +294,12 @@ export function DifferenceDetail({ difference }: DifferenceDetailProps) {
   }
 
   const getDiffTypeLabel = () => {
+    if (difference.diff_type.includes('DUPLICATE_SOURCE')) {
+      return 'Duplicate in Source'
+    }
+    if (difference.diff_type.includes('DUPLICATE_TARGET')) {
+      return 'Duplicate in Target'
+    }
     if (difference.diff_type.includes('MISSING_TARGET') || difference.diff_type.includes('REMOVED')) {
       return 'Source Only'
     }
@@ -189,6 +311,12 @@ export function DifferenceDetail({ difference }: DifferenceDetailProps) {
   
   const getSourceLabel = () => {
     const diffLabel = getDiffTypeLabel()
+    if (diffLabel === 'Duplicate in Source') {
+      return 'Original index (has same structure)'
+    }
+    if (diffLabel === 'Duplicate in Target') {
+      return 'Original index structure'
+    }
     if (diffLabel === 'Source Only') {
       return 'Exists only in source'
     }
@@ -200,6 +328,12 @@ export function DifferenceDetail({ difference }: DifferenceDetailProps) {
   
   const getTargetLabel = () => {
     const diffLabel = getDiffTypeLabel()
+    if (diffLabel === 'Duplicate in Source') {
+      return 'Index does not exist in target'
+    }
+    if (diffLabel === 'Duplicate in Target') {
+      return 'Duplicate index (has same structure)'
+    }
     if (diffLabel === 'Target Only') {
       return 'Exists only in target'
     }
@@ -237,40 +371,44 @@ export function DifferenceDetail({ difference }: DifferenceDetailProps) {
         
       case DiffType.COLUMN_TYPE_CHANGED:
         if (difference.target_value) {
-          // If target_value is a string, it's the column type directly
-          if (typeof difference.target_value === 'string') {
-            return `ALTER TABLE ${tableName} MODIFY COLUMN ${columnName} ${difference.target_value};`
+          // Get target type
+          const targetType = typeof difference.target_value === 'string' 
+            ? difference.target_value 
+            : difference.target_value.column_type || difference.target_value.data_type
+          
+          // Use source column info to preserve other attributes (comment, default, etc.)
+          const sourceInfo = typeof difference.source_value === 'object' ? difference.source_value : null
+          
+          if (sourceInfo) {
+            // Build complete definition with new type but preserving source's other attributes
+            const colDef = buildColumnDefinition(sourceInfo, targetType)
+            return `-- Execute on SOURCE database:\nALTER TABLE ${tableName} MODIFY COLUMN ${columnName} ${colDef};`
           }
           
-          // If it's an object, extract the column type and other properties
-          const col = difference.target_value
-          const columnType = col.column_type || col.data_type
-          if (columnType) {
-            const nullable = col.is_nullable !== undefined ? (col.is_nullable ? 'NULL' : 'NOT NULL') : ''
-            const defaultValue = col.column_default ? ` DEFAULT ${col.column_default}` : ''
-            const extra = col.extra ? ` ${col.extra}` : ''
-            return `ALTER TABLE ${tableName} MODIFY COLUMN ${columnName} ${columnType} ${nullable}${defaultValue}${extra};`
-          }
+          return `-- Execute on SOURCE database:\nALTER TABLE ${tableName} MODIFY COLUMN ${columnName} ${targetType};`
         }
         return `-- Unable to determine target column type`
         
       case DiffType.COLUMN_NULLABLE_CHANGED:
         if (difference.target_value !== undefined) {
-          // Get column type from target_value (now contains full column info)
-          let columnType = 'VARCHAR(255)' // default fallback
-          if (typeof difference.target_value === 'object' && difference.target_value.column_type) {
-            columnType = difference.target_value.column_type
-          } else if (typeof difference.source_value === 'object' && difference.source_value.column_type) {
-            columnType = difference.source_value.column_type
+          // Get target nullable state
+          const targetNullable = typeof difference.target_value === 'object' 
+            ? difference.target_value.is_nullable 
+            : difference.target_value
+          
+          // Use source column info to preserve other attributes (comment, default, etc.)
+          const sourceInfo = typeof difference.source_value === 'object' ? difference.source_value : null
+          
+          if (sourceInfo) {
+            // Build complete definition with new nullable but preserving source's other attributes
+            const colDef = buildColumnDefinition(sourceInfo, undefined, targetNullable)
+            return `-- Execute on SOURCE database:\nALTER TABLE ${tableName} MODIFY COLUMN ${columnName} ${colDef};`
           }
           
-          // Get nullable state from target_value
-          let nullable = 'NULL'
-          if (typeof difference.target_value === 'object') {
-            nullable = difference.target_value.is_nullable ? 'NULL' : 'NOT NULL'
-          } else {
-            nullable = difference.target_value ? 'NULL' : 'NOT NULL'
-          }
+          const columnType = typeof difference.source_value === 'object' 
+            ? difference.source_value.column_type 
+            : 'VARCHAR(255)'
+          const nullable = targetNullable ? 'NULL' : 'NOT NULL'
           
           return `-- Execute on SOURCE database:\nALTER TABLE ${tableName} MODIFY COLUMN ${columnName} ${columnType} ${nullable};`
         }
@@ -309,6 +447,28 @@ export function DifferenceDetail({ difference }: DifferenceDetailProps) {
           return `-- Execute on SOURCE database:\nCREATE ${unique}INDEX ${columnName} ON ${tableName} (${columns})${indexType};`
         }
         return `-- Execute on SOURCE database:\nCREATE INDEX ${columnName} ON ${tableName} (-- column_name --);`
+      
+      case DiffType.INDEX_RENAMED:
+        // Index renamed: Option 1 = Rename in Source to match Target
+        if (difference.target_value) {
+          const targetName = difference.target_value.index_name
+          return `-- Execute on SOURCE database:\n-- Rename index to match target\nALTER TABLE ${tableName} RENAME INDEX \`${difference.sub_object_name}\` TO \`${targetName}\`;`
+        }
+        return `-- Execute on SOURCE database:\nALTER TABLE ${tableName} RENAME INDEX \`${difference.sub_object_name}\` TO \`new_name\`;`
+      
+      case DiffType.INDEX_DUPLICATE_SOURCE:
+        // Duplicate index in source: Option 1 = Drop duplicate from Source
+        return `-- Execute on SOURCE database:\n-- Drop duplicate index\nDROP INDEX \`${difference.sub_object_name}\` ON ${tableName};`
+      
+      case DiffType.INDEX_DUPLICATE_TARGET:
+        // Duplicate index in target: Option 1 = Add same duplicate to Source (not recommended)
+        if (difference.target_value) {
+          const idx = difference.target_value
+          const unique = idx.is_unique ? 'UNIQUE ' : ''
+          const columns = idx.columns || '-- columns --'
+          return `-- Execute on SOURCE database:\n-- Add duplicate index (NOT RECOMMENDED)\nCREATE ${unique}INDEX \`${idx.index_name}\` ON ${tableName} (${columns});`
+        }
+        return `-- NOT RECOMMENDED: Duplicate index should be removed from target instead`
         
       case DiffType.CONSTRAINT_MISSING_TARGET:
         if (difference.target_value) {
@@ -342,6 +502,18 @@ export function DifferenceDetail({ difference }: DifferenceDetailProps) {
         
       case DiffType.CONSTRAINT_MISSING_SOURCE:
         return `ALTER TABLE ${tableName} DROP CONSTRAINT ${columnName};`
+      
+      case DiffType.CONSTRAINT_RENAMED:
+        // Constraint renamed: Option 1 = Rename in Source to match Target
+        if (difference.target_value) {
+          const targetName = difference.target_value.constraint_name
+          const constraintType = difference.target_value.constraint_type
+          if (constraintType === 'UNIQUE') {
+            return `-- Execute on SOURCE database:\n-- Rename UNIQUE constraint to match target\nALTER TABLE ${tableName} RENAME INDEX \`${difference.sub_object_name}\` TO \`${targetName}\`;`
+          }
+          return `-- Execute on SOURCE database:\n-- Rename constraint to match target\n-- Note: May require DROP and CREATE for some constraint types\nALTER TABLE ${tableName} RENAME INDEX \`${difference.sub_object_name}\` TO \`${targetName}\`;`
+        }
+        return `-- Execute on SOURCE database:\nALTER TABLE ${tableName} RENAME INDEX \`${difference.sub_object_name}\` TO \`new_name\`;`
         
       case DiffType.TABLE_MISSING_TARGET:
         // Source Only: Option 1 = Delete from Source
@@ -349,13 +521,7 @@ export function DifferenceDetail({ difference }: DifferenceDetailProps) {
         
       case DiffType.TABLE_MISSING_SOURCE:
         // Target Only: Option 1 = Add to Source  
-        if (difference.target_value) {
-          const table = difference.target_value
-          const engine = table.engine ? ` ENGINE=${table.engine}` : ' ENGINE=InnoDB'
-          const collation = table.collation ? ` COLLATE=${table.collation}` : ''
-          return `-- Execute on SOURCE database:\nCREATE TABLE ${tableName} (\n  -- Table structure will be generated in sync script\n)${engine}${collation};`
-        }
-        return `-- Execute on SOURCE database:\nCREATE TABLE ${tableName} (\n  -- Table structure will be generated in sync script\n) ENGINE=InnoDB;`
+        return generateCreateTableSQL(difference.target_value, tableName, 'SOURCE')
         
       default:
         return `-- Forward SQL for ${difference.diff_type} will be generated in sync script`
@@ -364,24 +530,38 @@ export function DifferenceDetail({ difference }: DifferenceDetailProps) {
 
   const getOption1Label = () => {
     const diffType = difference.diff_type.toLowerCase()
-    if (diffType.includes('missing_target')) {
-      return 'Option 1: Remove from Source'
+    if (diffType.includes('duplicate_source')) {
+      return 'Drop duplicate from Source'
     }
-    if (diffType.includes('missing_source')) {
-      return 'Option 1: Add to Source'  
+    if (diffType.includes('duplicate_target')) {
+      return 'Add duplicate to Source (NOT RECOMMENDED)'
     }
-    return 'Option 1'
+    if (diffType.includes('missing_target') || diffType.includes('removed')) {
+      return 'Make Source like Target (Remove from Source)'
+    }
+    if (diffType.includes('missing_source') || diffType.includes('added')) {
+      return 'Make Source like Target (Add to Source)'  
+    }
+    // For CHANGED types (type, default, nullable)
+    return 'Make Source like Target (Modify Source)'
   }
 
   const getOption2Label = () => {
     const diffType = difference.diff_type.toLowerCase()
-    if (diffType.includes('missing_target')) {
-      return 'Option 2: Add to Target'
+    if (diffType.includes('duplicate_source')) {
+      return 'Keep duplicate in Source (No action)'
     }
-    if (diffType.includes('missing_source')) {
-      return 'Option 2: Remove from Target'
+    if (diffType.includes('duplicate_target')) {
+      return 'Drop duplicate from Target (RECOMMENDED)'
     }
-    return 'Option 2'
+    if (diffType.includes('missing_target') || diffType.includes('removed')) {
+      return 'Make Target like Source (Add to Target)'
+    }
+    if (diffType.includes('missing_source') || diffType.includes('added')) {
+      return 'Make Target like Source (Remove from Target)'
+    }
+    // For CHANGED types (type, default, nullable)
+    return 'Make Target like Source (Modify Target)'
   }
 
   const generateOption2SQL = () => {
@@ -412,40 +592,44 @@ export function DifferenceDetail({ difference }: DifferenceDetailProps) {
         
       case DiffType.COLUMN_TYPE_CHANGED:
         if (difference.source_value) {
-          // If source_value is a string, it's the column type directly
-          if (typeof difference.source_value === 'string') {
-            return `ALTER TABLE ${tableName} MODIFY COLUMN ${columnName} ${difference.source_value};`
+          // Get source type
+          const sourceType = typeof difference.source_value === 'string' 
+            ? difference.source_value 
+            : difference.source_value.column_type || difference.source_value.data_type
+          
+          // Use target column info to preserve other attributes (comment, default, etc.)
+          const targetInfo = typeof difference.target_value === 'object' ? difference.target_value : null
+          
+          if (targetInfo) {
+            // Build complete definition with source type but preserving target's other attributes
+            const colDef = buildColumnDefinition(targetInfo, sourceType)
+            return `-- Execute on TARGET database:\nALTER TABLE ${tableName} MODIFY COLUMN ${columnName} ${colDef};`
           }
           
-          // If it's an object, extract the column type and other properties
-          const col = difference.source_value
-          const columnType = col.column_type || col.data_type
-          if (columnType) {
-            const nullable = col.is_nullable !== undefined ? (col.is_nullable ? 'NULL' : 'NOT NULL') : ''
-            const defaultValue = col.column_default ? ` DEFAULT ${col.column_default}` : ''
-            const extra = col.extra ? ` ${col.extra}` : ''
-            return `ALTER TABLE ${tableName} MODIFY COLUMN ${columnName} ${columnType} ${nullable}${defaultValue}${extra};`
-          }
+          return `-- Execute on TARGET database:\nALTER TABLE ${tableName} MODIFY COLUMN ${columnName} ${sourceType};`
         }
         return `-- Unable to determine source column type`
         
       case DiffType.COLUMN_NULLABLE_CHANGED:
         if (difference.source_value !== undefined) {
-          // Get column type from source_value (now contains full column info)
-          let columnType = 'VARCHAR(255)' // default fallback
-          if (typeof difference.source_value === 'object' && difference.source_value.column_type) {
-            columnType = difference.source_value.column_type
-          } else if (typeof difference.target_value === 'object' && difference.target_value.column_type) {
-            columnType = difference.target_value.column_type
+          // Get source nullable state
+          const sourceNullable = typeof difference.source_value === 'object' 
+            ? difference.source_value.is_nullable 
+            : difference.source_value
+          
+          // Use target column info to preserve other attributes (comment, default, etc.)
+          const targetInfo = typeof difference.target_value === 'object' ? difference.target_value : null
+          
+          if (targetInfo) {
+            // Build complete definition with source nullable but preserving target's other attributes
+            const colDef = buildColumnDefinition(targetInfo, undefined, sourceNullable)
+            return `-- Execute on TARGET database:\nALTER TABLE ${tableName} MODIFY COLUMN ${columnName} ${colDef};`
           }
           
-          // Get nullable state from source_value
-          let nullable = 'NULL'
-          if (typeof difference.source_value === 'object') {
-            nullable = difference.source_value.is_nullable ? 'NULL' : 'NOT NULL'
-          } else {
-            nullable = difference.source_value ? 'NULL' : 'NOT NULL'
-          }
+          const columnType = typeof difference.target_value === 'object' 
+            ? difference.target_value.column_type 
+            : 'VARCHAR(255)'
+          const nullable = sourceNullable ? 'NULL' : 'NOT NULL'
           
           return `-- Execute on TARGET database:\nALTER TABLE ${tableName} MODIFY COLUMN ${columnName} ${columnType} ${nullable};`
         }
@@ -484,6 +668,25 @@ export function DifferenceDetail({ difference }: DifferenceDetailProps) {
       case DiffType.INDEX_MISSING_SOURCE:
         // Target Only: Option 2 = Remove from Target
         return `-- Execute on TARGET database:\nDROP INDEX ${columnName} ON ${tableName};`
+      
+      case DiffType.INDEX_RENAMED:
+        // Index renamed: Option 2 = Rename in Target to match Source
+        if (difference.target_value) {
+          const targetName = difference.target_value.index_name
+          return `-- Execute on TARGET database:\n-- Rename index to match source\nALTER TABLE ${tableName} RENAME INDEX \`${targetName}\` TO \`${difference.sub_object_name}\`;`
+        }
+        return `-- Execute on TARGET database:\nALTER TABLE ${tableName} RENAME INDEX \`old_name\` TO \`${difference.sub_object_name}\`;`
+      
+      case DiffType.INDEX_DUPLICATE_SOURCE:
+        // Duplicate index in source: Option 2 = Keep duplicate (no action needed on target)
+        return `-- No action needed on TARGET\n-- Duplicate index exists only in SOURCE`
+      
+      case DiffType.INDEX_DUPLICATE_TARGET:
+        // Duplicate index in target: Option 2 = Drop duplicate from Target (RECOMMENDED)
+        if (difference.target_value) {
+          return `-- Execute on TARGET database:\n-- Drop duplicate index (RECOMMENDED)\nDROP INDEX \`${difference.target_value.index_name}\` ON ${tableName};`
+        }
+        return `-- Execute on TARGET database:\n-- Drop duplicate index\nDROP INDEX \`${difference.sub_object_name}\` ON ${tableName};`
         
       case DiffType.CONSTRAINT_MISSING_TARGET:
         return `ALTER TABLE ${tableName} DROP CONSTRAINT ${columnName};`
@@ -517,16 +720,22 @@ export function DifferenceDetail({ difference }: DifferenceDetailProps) {
           }
         }
         return `-- Unable to generate constraint definition - missing constraint data`
+      
+      case DiffType.CONSTRAINT_RENAMED:
+        // Constraint renamed: Option 2 = Rename in Target to match Source
+        if (difference.target_value) {
+          const targetName = difference.target_value.constraint_name
+          const constraintType = difference.target_value.constraint_type
+          if (constraintType === 'UNIQUE') {
+            return `-- Execute on TARGET database:\n-- Rename UNIQUE constraint to match source\nALTER TABLE ${tableName} RENAME INDEX \`${targetName}\` TO \`${difference.sub_object_name}\`;`
+          }
+          return `-- Execute on TARGET database:\n-- Rename constraint to match source\n-- Note: May require DROP and CREATE for some constraint types\nALTER TABLE ${tableName} RENAME INDEX \`${targetName}\` TO \`${difference.sub_object_name}\`;`
+        }
+        return `-- Execute on TARGET database:\nALTER TABLE ${tableName} RENAME INDEX \`old_name\` TO \`${difference.sub_object_name}\`;`
         
       case DiffType.TABLE_MISSING_TARGET:
         // Source Only: Option 2 = Add to Target
-        if (difference.source_value) {
-          const table = difference.source_value
-          const engine = table.engine ? ` ENGINE=${table.engine}` : ' ENGINE=InnoDB'
-          const collation = table.collation ? ` COLLATE=${table.collation}` : ''
-          return `-- Execute on TARGET database:\nCREATE TABLE ${tableName} (\n  -- Table structure will be generated in sync script\n)${engine}${collation};`
-        }
-        return `-- Execute on TARGET database:\nCREATE TABLE ${tableName} (\n  -- Table structure will be generated in sync script\n) ENGINE=InnoDB;`
+        return generateCreateTableSQL(difference.source_value, tableName, 'TARGET')
         
       case DiffType.TABLE_MISSING_SOURCE:
         // Target Only: Option 2 = Delete from Target
@@ -550,56 +759,68 @@ export function DifferenceDetail({ difference }: DifferenceDetailProps) {
         </div>
       </div>
 
-      {/* Values Comparison */}
-      {(difference.source_value || difference.target_value) && (
+      {/* Values Comparison - Always show both Source and Target for clarity */}
+      {(difference.source_value !== undefined || difference.target_value !== undefined) && (
         <div className="space-y-4">
           <div className="grid gap-4 md:grid-cols-2">
             {/* Source Value */}
-            {difference.source_value && (
-              <div className="rounded-lg border border-blue-200 bg-blue-50/50 p-3">
-                <div className="flex items-center justify-between mb-2">
-                  <div className="flex items-center gap-2">
-                    <Database className="h-4 w-4 text-blue-600" />
-                    <span className="text-sm font-medium text-blue-900">Source Database</span>
-                  </div>
-                  <span className="text-xs text-blue-700">{getSourceLabel()}</span>
+            <div className="rounded-lg border-2 border-blue-300 dark:border-blue-700 p-3">
+              <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center gap-2">
+                  <Database className="h-4 w-4 text-blue-600 dark:text-blue-400" />
+                  <span className="text-sm font-medium">Source</span>
                 </div>
-                {formatValue(difference.source_value, difference.object_type)}
+                {getSourceLabel() && (
+                  <span className="text-xs text-muted-foreground">{getSourceLabel()}</span>
+                )}
               </div>
-            )}
+              {difference.source_value !== undefined && difference.source_value !== null ? (
+                formatValue(difference.source_value, difference.object_type)
+              ) : (
+                <p className="text-sm text-muted-foreground italic">
+                  {getDiffTypeLabel() === 'Target Only' ? '(Does not exist)' : '(NULL)'}
+                </p>
+              )}
+            </div>
 
             {/* Target Value */}
-            {difference.target_value && (
-              <div className="rounded-lg border border-gray-200 bg-gray-50/50 p-3">
-                <div className="flex items-center justify-between mb-2">
-                  <div className="flex items-center gap-2">
-                    <Database className="h-4 w-4 text-gray-600" />
-                    <span className="text-sm font-medium text-gray-900">Target Database</span>
-                  </div>
-                  <span className="text-xs text-gray-700">{getTargetLabel()}</span>
+            <div className="rounded-lg border-2 border-green-300 dark:border-green-700 p-3">
+              <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center gap-2">
+                  <Database className="h-4 w-4 text-green-600 dark:text-green-400" />
+                  <span className="text-sm font-medium">Target</span>
                 </div>
-                {formatValue(difference.target_value, difference.object_type)}
+                {getTargetLabel() && (
+                  <span className="text-xs text-muted-foreground">{getTargetLabel()}</span>
+                )}
               </div>
-            )}
-          </div>
-
-          {/* Arrow for changes */}
-          {difference.source_value && difference.target_value && (
-            <div className="flex justify-center">
-              <ArrowRight className="h-5 w-5 text-muted-foreground" />
+              {difference.target_value !== undefined && difference.target_value !== null ? (
+                formatValue(difference.target_value, difference.object_type)
+              ) : (
+                <p className="text-sm text-muted-foreground italic">
+                  {getDiffTypeLabel() === 'Source Only' ? '(Does not exist)' : '(NULL)'}
+                </p>
+              )}
             </div>
-          )}
+          </div>
         </div>
       )}
 
-      {/* SQL Preview */}
+      {/* SQL Preview - Two options for syncing */}
       <div className="space-y-3">
-        {/* Forward SQL */}
+        <p className="text-sm text-muted-foreground">Choose how to resolve this difference:</p>
+        
+        {/* Option 1: Target → Source direction */}
         <div className="rounded-lg border bg-card p-3">
           <div className="flex items-center justify-between mb-2">
             <div className="flex items-center gap-2">
-              <Code className="h-4 w-4" />
-              <span className="text-sm font-medium">{getOption1Label()}</span>
+              <Code className="h-4 w-4 text-green-600" />
+              <span className="text-sm font-medium">
+                Target → Source
+                <span className="ml-2 text-xs font-normal text-muted-foreground">
+                  {getOption1Label()}
+                </span>
+              </span>
             </div>
             <Button
               variant="ghost"
@@ -609,17 +830,30 @@ export function DifferenceDetail({ difference }: DifferenceDetailProps) {
               <Copy className="h-3 w-3" />
             </Button>
           </div>
-          <pre className="text-xs font-mono bg-muted p-2 rounded overflow-x-auto">
+          <SyntaxHighlighter 
+            language="sql" 
+            style={oneDark}
+            customStyle={{
+              margin: 0,
+              borderRadius: '0.375rem',
+              fontSize: '0.75rem',
+            }}
+          >
             {generateOption1SQL()}
-          </pre>
+          </SyntaxHighlighter>
         </div>
 
-        {/* Rollback SQL */}
+        {/* Option 2: Source → Target direction */}
         <div className="rounded-lg border bg-card p-3">
           <div className="flex items-center justify-between mb-2">
             <div className="flex items-center gap-2">
-              <Code className="h-4 w-4" />
-              <span className="text-sm font-medium">{getOption2Label()}</span>
+              <Code className="h-4 w-4 text-blue-600" />
+              <span className="text-sm font-medium">
+                Source → Target
+                <span className="ml-2 text-xs font-normal text-muted-foreground">
+                  {getOption2Label()}
+                </span>
+              </span>
             </div>
             <Button
               variant="ghost"
@@ -629,9 +863,17 @@ export function DifferenceDetail({ difference }: DifferenceDetailProps) {
               <Copy className="h-3 w-3" />
             </Button>
           </div>
-          <pre className="text-xs font-mono bg-muted p-2 rounded overflow-x-auto">
+          <SyntaxHighlighter 
+            language="sql" 
+            style={oneDark}
+            customStyle={{
+              margin: 0,
+              borderRadius: '0.375rem',
+              fontSize: '0.75rem',
+            }}
+          >
             {generateOption2SQL()}
-          </pre>
+          </SyntaxHighlighter>
         </div>
       </div>
 
