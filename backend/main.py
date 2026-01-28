@@ -1,5 +1,7 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
 import logging
 import uvicorn
@@ -58,6 +60,24 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# Add validation error handler for debugging
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """Log validation errors for debugging"""
+    logger.error(f"Validation error on {request.method} {request.url.path}")
+    logger.error(f"Validation errors: {exc.errors()}")
+    try:
+        body = await request.body()
+        logger.error(f"Request body: {body.decode()[:2000]}")  # Limit to 2000 chars
+    except Exception as e:
+        logger.error(f"Could not read request body: {e}")
+
+    return JSONResponse(
+        status_code=422,
+        content={"detail": exc.errors()}
+    )
 
 # WebSocket connection manager
 manager = ConnectionManager()

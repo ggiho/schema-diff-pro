@@ -41,11 +41,11 @@ class SSHKeyType(str, Enum):
 class SSHTunnelConfig(BaseModel):
     """SSH tunnel configuration"""
     enabled: bool = False
-    
-    # SSH Connection Details
-    ssh_host: str = Field(..., description="SSH server hostname or IP")
+
+    # SSH Connection Details - Optional with default empty string when disabled
+    ssh_host: str = Field(default="", description="SSH server hostname or IP")
     ssh_port: int = Field(default=22, ge=1, le=65535)
-    ssh_user: str = Field(..., description="SSH username")
+    ssh_user: str = Field(default="", description="SSH username")
     
     # Authentication
     auth_method: SSHAuthMethod = SSHAuthMethod.PRIVATE_KEY
@@ -74,32 +74,45 @@ class SSHTunnelConfig(BaseModel):
     known_hosts_path: Optional[str] = Field(default=None, description="Path to known_hosts file")
     
     @validator('ssh_host')
-    def validate_ssh_host(cls, v):
+    def validate_ssh_host(cls, v, values):
         """Validate SSH hostname or IP"""
+        # Skip validation if SSH tunnel is disabled
+        if not values.get('enabled', False):
+            return v or ''
+
         if not v or not v.strip():
             raise ValueError("SSH host cannot be empty")
-        
+
         # Basic hostname/IP validation
         if not re.match(r'^[a-zA-Z0-9.-]+$', v.strip()):
             raise ValueError("Invalid SSH host format")
-        
+
         return v.strip()
-    
+
     @validator('ssh_user')
-    def validate_ssh_user(cls, v):
+    def validate_ssh_user(cls, v, values):
         """Validate SSH username"""
+        # Skip validation if SSH tunnel is disabled
+        if not values.get('enabled', False):
+            return v or ''
+
         if not v or not v.strip():
             raise ValueError("SSH username cannot be empty")
-        
+
         # Basic username validation
         if not re.match(r'^[a-zA-Z0-9._-]+$', v.strip()):
             raise ValueError("Invalid SSH username format")
-        
+
         return v.strip()
     
     @validator('private_key_passphrase', always=True)
     def validate_key_path_requirements(cls, v, values):
         """Validate private key path exists if specified and no content provided - runs after private_key_content"""
+        # Skip validation if SSH tunnel is disabled
+        enabled = values.get('enabled', False)
+        if not enabled:
+            return v
+
         key_path = values.get('private_key_path')
         logger.debug(f"Validating private_key_path={key_path}, values keys: {list(values.keys())}")
         
@@ -129,9 +142,14 @@ class SSHTunnelConfig(BaseModel):
     @validator('key_type', always=True)
     def validate_auth_requirements(cls, v, values):
         """Ensure required fields are present for chosen auth method - runs after all key fields are processed"""
+        # Skip validation if SSH tunnel is disabled
+        enabled = values.get('enabled', False)
+        if not enabled:
+            return v
+
         auth_method = values.get('auth_method')
         logger.debug(f"Validating auth requirements for method={auth_method}, values keys: {list(values.keys())}")
-        
+
         if auth_method == SSHAuthMethod.PASSWORD:
             password = values.get('ssh_password')
             if not password or (isinstance(password, str) and not password.strip()):
