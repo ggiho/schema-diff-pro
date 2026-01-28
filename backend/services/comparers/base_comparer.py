@@ -141,24 +141,27 @@ class BaseComparer(ABC):
             ObjectType.VIEW: (DiffType.VIEW_MISSING_SOURCE, DiffType.VIEW_MISSING_TARGET),
             ObjectType.TRIGGER: (DiffType.TRIGGER_MISSING_SOURCE, DiffType.TRIGGER_MISSING_TARGET),
         }
-        
+
         source_type, target_type = diff_type_map.get(
             self.object_type,
             (DiffType.TABLE_MISSING_SOURCE, DiffType.TABLE_MISSING_TARGET)
         )
-        
+
         # Parse composite key to extract schema, table, and sub-object names
         schema_name = obj_data.get("schema_name")
         table_name = obj_data.get("table_name")
         sub_object_name = None
-        
+
         # For constraints and indexes, extract the actual name from obj_data
         if self.object_type in [ObjectType.CONSTRAINT, ObjectType.INDEX]:
             if self.object_type == ObjectType.CONSTRAINT:
                 sub_object_name = obj_data.get("constraint_name")
             elif self.object_type == ObjectType.INDEX:
                 sub_object_name = obj_data.get("index_name")
-        
+
+        # Generate display value based on object type
+        display_value = self._get_display_value(obj_data)
+
         return Difference(
             diff_type=source_type if missing_in == "source" else target_type,
             severity=SeverityLevel.HIGH,
@@ -168,10 +171,36 @@ class BaseComparer(ABC):
             sub_object_name=sub_object_name,
             source_value=None if missing_in == "source" else obj_data,
             target_value=obj_data if missing_in == "source" else None,
+            source_display_value=None if missing_in == "source" else display_value,
+            target_display_value=display_value if missing_in == "source" else None,
             description=f"{self.object_type.value.capitalize()} '{sub_object_name or obj_name}' exists only in {'target' if missing_in == 'source' else 'source'} database",
             can_auto_fix=True,
             fix_order=self.get_fix_order()
         )
+
+    def _get_display_value(self, obj_data: Any) -> str:
+        """Generate a human-readable display value for an object"""
+        if not isinstance(obj_data, dict):
+            return str(obj_data)
+
+        if self.object_type == ObjectType.INDEX:
+            columns = obj_data.get("columns", "")
+            is_unique = obj_data.get("is_unique", False)
+            unique_str = "UNIQUE " if is_unique else ""
+            return f"{unique_str}({columns})"
+
+        elif self.object_type == ObjectType.CONSTRAINT:
+            constraint_type = obj_data.get("constraint_type", "")
+            columns = obj_data.get("columns", "")
+            return f"{constraint_type} ({columns})"
+
+        elif self.object_type == ObjectType.TABLE:
+            engine = obj_data.get("engine", "")
+            return f"ENGINE={engine}"
+
+        else:
+            # For other types, return a summary or the name
+            return obj_data.get("name", str(obj_data)[:50])
     
     def get_fix_order(self) -> int:
         """Get the order for fixing this type of difference"""

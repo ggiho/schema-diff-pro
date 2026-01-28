@@ -307,6 +307,8 @@ class ConstraintComparer(BaseComparer):
                     sub_object_name=source_const['constraint_name'],
                     source_value=source_const,
                     target_value=target_const,
+                    source_display_value=source_const['constraint_name'],
+                    target_display_value=target_const['constraint_name'],
                     description=f"Constraint renamed: {source_const['constraint_name']} → {target_const['constraint_name']}",
                     can_auto_fix=True,
                     fix_order=self.get_fix_order()

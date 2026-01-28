@@ -376,6 +376,8 @@ class TableComparer(BaseComparer):
                 sub_object_name=column_name,
                 source_value=source_col,  # Pass full column info for proper MODIFY COLUMN
                 target_value=target_col,  # Pass full column info for proper MODIFY COLUMN
+                source_display_value=source_col["column_type"],
+                target_display_value=target_col["column_type"],
                 description=f"Column type changed: {source_col['column_type']} → {target_col['column_type']}",
                 can_auto_fix=True,
                 fix_order=self.get_fix_order() + 1,
@@ -393,6 +395,8 @@ class TableComparer(BaseComparer):
                 sub_object_name=column_name,
                 source_value=source_col,  # Pass full column info
                 target_value=target_col,  # Pass full column info
+                source_display_value="YES" if source_col["is_nullable"] else "NO",
+                target_display_value="YES" if target_col["is_nullable"] else "NO",
                 description=f"Column nullable constraint changed",
                 can_auto_fix=True,
                 fix_order=self.get_fix_order() + 1,
@@ -411,6 +415,8 @@ class TableComparer(BaseComparer):
                     sub_object_name=column_name,
                     source_value=source_col,  # Pass full column info for proper MODIFY COLUMN
                     target_value=target_col,  # Pass full column info for proper MODIFY COLUMN
+                    source_display_value=str(source_col["column_default"]) if source_col["column_default"] is not None else "NULL",
+                    target_display_value=str(target_col["column_default"]) if target_col["column_default"] is not None else "NULL",
                     description=f"Column default value changed",
                     can_auto_fix=True,
                     fix_order=self.get_fix_order() + 1
@@ -428,6 +434,8 @@ class TableComparer(BaseComparer):
                     sub_object_name=column_name,
                     source_value=source_col,  # Pass full column info for proper MODIFY COLUMN
                     target_value=target_col,  # Pass full column info for proper MODIFY COLUMN
+                    source_display_value=source_col["extra"] or "(none)",
+                    target_display_value=target_col["extra"] or "(none)",
                     description=f"Column extra properties changed",
                     can_auto_fix=True,
                     fix_order=self.get_fix_order() + 1

@@ -137,7 +137,11 @@ class Difference(BaseModel):
     source_value: Optional[Any] = None
     target_value: Optional[Any] = None
     description: str
-    
+
+    # Display-friendly values for UI (simple strings instead of full objects)
+    source_display_value: Optional[str] = None
+    target_display_value: Optional[str] = None
+
     # Additional metadata
     can_auto_fix: bool = False
     fix_order: int = 0  # For dependency ordering
