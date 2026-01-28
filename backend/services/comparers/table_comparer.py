@@ -374,8 +374,8 @@ class TableComparer(BaseComparer):
                 schema_name=schema_name,
                 object_name=table_name,
                 sub_object_name=column_name,
-                source_value=source_col["column_type"],
-                target_value=target_col["column_type"],
+                source_value=source_col,  # Pass full column info for proper MODIFY COLUMN
+                target_value=target_col,  # Pass full column info for proper MODIFY COLUMN
                 description=f"Column type changed: {source_col['column_type']} → {target_col['column_type']}",
                 can_auto_fix=True,
                 fix_order=self.get_fix_order() + 1,
@@ -409,8 +409,8 @@ class TableComparer(BaseComparer):
                     schema_name=schema_name,
                     object_name=table_name,
                     sub_object_name=column_name,
-                    source_value=source_col["column_default"],
-                    target_value=target_col["column_default"],
+                    source_value=source_col,  # Pass full column info for proper MODIFY COLUMN
+                    target_value=target_col,  # Pass full column info for proper MODIFY COLUMN
                     description=f"Column default value changed",
                     can_auto_fix=True,
                     fix_order=self.get_fix_order() + 1
@@ -426,8 +426,8 @@ class TableComparer(BaseComparer):
                     schema_name=schema_name,
                     object_name=table_name,
                     sub_object_name=column_name,
-                    source_value=source_col["extra"],
-                    target_value=target_col["extra"],
+                    source_value=source_col,  # Pass full column info for proper MODIFY COLUMN
+                    target_value=target_col,  # Pass full column info for proper MODIFY COLUMN
                     description=f"Column extra properties changed",
                     can_auto_fix=True,
                     fix_order=self.get_fix_order() + 1

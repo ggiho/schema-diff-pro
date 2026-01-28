@@ -135,12 +135,17 @@ class SyncScriptGenerator:
         # Generate SQL statements
         forward_statements = []
         rollback_statements = []
-        
+
+        logger.info(f"Generating statements for {len(filtered_differences)} differences")
         for diff in filtered_differences:
             try:
+                logger.info(f"Processing: {diff.diff_type.value} - {diff.schema_name}.{diff.object_name}.{diff.sub_object_name or ''}")
                 forward, rollback = self._generate_statements(diff)
                 if forward:
                     forward_statements.append(forward)
+                    logger.info(f"Generated forward statement for {diff.object_name}")
+                else:
+                    logger.warning(f"No forward statement generated for {diff.diff_type.value} - {diff.object_name}")
                 if rollback:
                     rollback_statements.append(rollback)
             except Exception as e:
@@ -540,15 +545,31 @@ ALTER TABLE {table_name} MODIFY COLUMN {column_name} {forward_def};"""
             # Fallback for simple value comparison (legacy format)
             target_default = diff.target_value if diff.target_value else 'NULL'
             source_default = diff.source_value if diff.source_value else 'NULL'
-            
+
+            # Helper function to properly quote default values
+            def quote_default(val):
+                if val is None or str(val).upper() == 'NULL':
+                    return 'NULL'
+                val_str = str(val)
+                # Don't quote special MySQL expressions
+                if val_str.upper() in ('CURRENT_TIMESTAMP', 'CURRENT_DATE', 'NOW()'):
+                    return val_str
+                if val_str.upper().startswith('CURRENT_'):
+                    return val_str
+                # Quote string values
+                return f"'{val_str}'"
+
+            quoted_target = quote_default(target_default)
+            quoted_source = quote_default(source_default)
+
             # Cannot generate proper MODIFY without full column info
             forward = f"""-- Modify Column Default: {column_name}
 -- From: {source_default}
 -- To: {target_default}
 -- WARNING: Full column definition needed. Using ALTER COLUMN (may not work in MySQL).
-ALTER TABLE {table_name} ALTER COLUMN {column_name} SET DEFAULT {target_default};"""
-            
-            rollback = f"ALTER TABLE {table_name} ALTER COLUMN {column_name} SET DEFAULT {source_default};"
+ALTER TABLE {table_name} ALTER COLUMN {column_name} SET DEFAULT {quoted_target};"""
+
+            rollback = f"ALTER TABLE {table_name} ALTER COLUMN {column_name} SET DEFAULT {quoted_source};"
         
         return forward, rollback
     
@@ -594,30 +615,35 @@ ALTER TABLE {table_name} MODIFY COLUMN {column_name} {forward_def};"""
         """Generate CREATE INDEX statement"""
         table_name = f"`{diff.schema_name}`.`{diff.object_name}`"
         index_name = diff.sub_object_name  # Don't add backticks here, they're added later if needed
-        
-        if diff.target_value:
-            if isinstance(diff.target_value, dict):
-                idx_data = diff.target_value
-                unique = "UNIQUE" if idx_data.get("is_unique") else ""
+
+        # For INDEX_MISSING_TARGET, the index exists in source, so use source_value
+        # For other cases (like after direction transform), use target_value
+        idx_data = diff.source_value or diff.target_value
+
+        if idx_data:
+            if isinstance(idx_data, dict):
+                is_unique = idx_data.get("is_unique")
                 columns = idx_data.get("columns", "")
                 idx_type = idx_data.get("index_type", "BTREE")
-                idx_type_clause = f"USING {idx_type}" if idx_type != "BTREE" else ""
-                
-                forward = f"""-- Create {unique.strip() or 'Regular'} Index: {index_name}
+                idx_type_clause = f" USING {idx_type}" if idx_type and idx_type != "BTREE" else ""
+                unique_keyword = "UNIQUE " if is_unique else ""
+                unique_label = "UNIQUE" if is_unique else "Regular"
+
+                forward = f"""-- Create {unique_label} Index: {index_name}
 -- Table: {table_name}
 -- Columns: {columns}
--- Type: {idx_type}
-CREATE {unique} INDEX `{index_name}` ON {table_name} ({columns}) {idx_type_clause};""".strip()
+-- Type: {idx_type or 'BTREE'}
+CREATE {unique_keyword}INDEX `{index_name}` ON {table_name} ({columns}){idx_type_clause};"""
             else:
                 # If it's a string, create a basic index
                 forward = f"""-- Create Index: {index_name}
 -- Table: {table_name}
--- Columns: {diff.target_value}
-CREATE INDEX `{index_name}` ON {table_name} ({diff.target_value});"""
-            
+-- Columns: {idx_data}
+CREATE INDEX `{index_name}` ON {table_name} ({idx_data});"""
+
             rollback = f"DROP INDEX `{index_name}` ON {table_name};"
             return forward, rollback
-        
+
         return None, None
     
     def _gen_drop_index(self, diff: Difference) -> Tuple[str, str]:
@@ -731,10 +757,12 @@ CREATE {unique} INDEX `{index_name}` ON {table_name} ({columns}) {idx_type_claus
         """Generate CREATE CONSTRAINT statement"""
         table_name = f"`{diff.schema_name}`.`{diff.object_name}`"
         constraint_name = diff.sub_object_name  # Don't add backticks here
-        
-        if diff.target_value:
-            if isinstance(diff.target_value, dict):
-                const_data = diff.target_value
+
+        # For CONSTRAINT_MISSING_TARGET, the constraint exists in source, so use source_value
+        const_data = diff.source_value or diff.target_value
+
+        if const_data:
+            if isinstance(const_data, dict):
                 const_type = const_data.get("constraint_type")
                 
                 if const_type == "FOREIGN KEY":
@@ -772,28 +800,28 @@ ALTER TABLE {table_name} ADD CONSTRAINT {constraint_name} UNIQUE ({columns});"""
                     
             else:
                 # Handle string format
-                forward = f"-- Add constraint: {constraint_name}\n-- Definition: {diff.target_value}\n-- TODO: Complete constraint definition;"
-            
+                forward = f"-- Add constraint: {constraint_name}\n-- Definition: {const_data}\n-- TODO: Complete constraint definition;"
+
             # Generate appropriate rollback based on constraint type
-            if isinstance(diff.target_value, dict):
-                const_type = diff.target_value.get("constraint_type", "")
-                if const_type == "PRIMARY KEY":
+            if isinstance(const_data, dict):
+                rollback_const_type = const_data.get("constraint_type", "")
+                if rollback_const_type == "PRIMARY KEY":
                     rollback = f"ALTER TABLE {table_name} DROP PRIMARY KEY;"
-                elif const_type == "FOREIGN KEY":
+                elif rollback_const_type == "FOREIGN KEY":
                     rollback = f"ALTER TABLE {table_name} DROP FOREIGN KEY {constraint_name};"
-                elif const_type == "UNIQUE":
+                elif rollback_const_type == "UNIQUE":
                     rollback = f"ALTER TABLE {table_name} DROP INDEX {constraint_name};"
                 else:
                     rollback = f"-- TODO: DROP CONSTRAINT {constraint_name};"
             else:
                 # Guess based on string content
-                if "PRIMARY" in str(diff.target_value):
+                if "PRIMARY" in str(const_data):
                     rollback = f"ALTER TABLE {table_name} DROP PRIMARY KEY;"
-                elif "FOREIGN" in str(diff.target_value):
+                elif "FOREIGN" in str(const_data):
                     rollback = f"ALTER TABLE {table_name} DROP FOREIGN KEY {constraint_name};"
                 else:
                     rollback = f"ALTER TABLE {table_name} DROP INDEX {constraint_name};"
-            
+
             return forward.strip(), rollback
         
         return None, None

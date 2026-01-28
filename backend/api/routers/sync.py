@@ -349,7 +349,7 @@ async def execute_sync_script(
 def parse_sql_statements(script: str) -> List[str]:
     """Parse SQL script into individual statements"""
     statements = []
-    
+
     # Remove comments
     lines = script.split('\n')
     clean_lines = []
@@ -362,12 +362,12 @@ def parse_sql_statements(script: str) -> List[str]:
         if '--' in line:
             line = line[:line.index('--')]
         clean_lines.append(line)
-    
+
     clean_script = '\n'.join(clean_lines)
-    
+
     # Split by semicolon
     raw_statements = clean_script.split(';')
-    
+
     for stmt in raw_statements:
         stmt = stmt.strip()
         if stmt and not stmt.upper().startswith(('SET ', 'USE ')):
@@ -376,5 +376,9 @@ def parse_sql_statements(script: str) -> List[str]:
                 'CREATE', 'ALTER', 'DROP', 'ADD', 'MODIFY', 'CHANGE', 'RENAME'
             ]):
                 statements.append(stmt)
-    
+                logger.info(f"Parsed statement: {stmt[:80]}...")
+            else:
+                logger.warning(f"Skipped statement (no DDL keyword): {stmt[:80]}...")
+
+    logger.info(f"Total parsed statements: {len(statements)}")
     return statements
