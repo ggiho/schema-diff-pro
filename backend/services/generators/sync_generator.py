@@ -18,6 +18,7 @@ REVERSE_DIFF_TYPE_MAP: Dict[DiffType, DiffType] = {
     # Columns
     DiffType.COLUMN_ADDED: DiffType.COLUMN_REMOVED,
     DiffType.COLUMN_REMOVED: DiffType.COLUMN_ADDED,
+    DiffType.COLUMN_RENAMED: DiffType.COLUMN_RENAMED,  # Same in both directions, just swap names
     # Indexes
     DiffType.INDEX_MISSING_SOURCE: DiffType.INDEX_MISSING_TARGET,
     DiffType.INDEX_MISSING_TARGET: DiffType.INDEX_MISSING_SOURCE,
@@ -269,14 +270,16 @@ class SyncScriptGenerator:
         generators = {
             # Tables
             DiffType.TABLE_MISSING_SOURCE: self._gen_drop_table,
-            DiffType.TABLE_MISSING_TARGET: self._gen_create_table,
+            DiffType.TABLE_MISSING_TARGET: self._gen_create_or_alter_table,
             
             # Columns
             DiffType.COLUMN_ADDED: self._gen_add_column,
             DiffType.COLUMN_REMOVED: self._gen_drop_column,
+            DiffType.COLUMN_RENAMED: self._gen_rename_column,
             DiffType.COLUMN_TYPE_CHANGED: self._gen_alter_column_type,
             DiffType.COLUMN_DEFAULT_CHANGED: self._gen_alter_column_default,
             DiffType.COLUMN_NULLABLE_CHANGED: self._gen_alter_column_nullable,
+            DiffType.COLUMN_EXTRA_CHANGED: self._gen_alter_column_extra,
             
             # Indexes
             DiffType.INDEX_MISSING_SOURCE: self._gen_drop_index,
@@ -300,6 +303,56 @@ class SyncScriptGenerator:
         return None, None
     
     # Table generators
+    def _gen_create_or_alter_table(self, diff: Difference) -> Tuple[str, str]:
+        """Generate CREATE TABLE or ALTER TABLE statement based on sub_object_name"""
+        # If sub_object_name is set, it's a table property change (engine, comment, collation)
+        if diff.sub_object_name:
+            return self._gen_alter_table_property(diff)
+        else:
+            return self._gen_create_table(diff)
+    
+    def _gen_alter_table_property(self, diff: Difference) -> Tuple[str, str]:
+        """Generate ALTER TABLE statement for table properties (engine, comment, collation)"""
+        table_name = f"`{diff.schema_name}`.`{diff.object_name}`"
+        property_name = diff.sub_object_name
+        source_value = diff.source_value
+        target_value = diff.target_value
+        
+        if property_name == "engine":
+            forward = f"""-- Modify Table Engine: {table_name}
+-- From: {source_value}
+-- To: {target_value}
+ALTER TABLE {table_name} ENGINE={target_value};"""
+            rollback = f"ALTER TABLE {table_name} ENGINE={source_value};"
+            
+        elif property_name == "comment":
+            # Escape single quotes in comments
+            escaped_target = str(target_value or "").replace("'", "''")
+            escaped_source = str(source_value or "").replace("'", "''")
+            
+            forward = f"""-- Modify Table Comment: {table_name}
+-- From: {source_value or '(none)'}
+-- To: {target_value or '(none)'}
+ALTER TABLE {table_name} COMMENT='{escaped_target}';"""
+            rollback = f"ALTER TABLE {table_name} COMMENT='{escaped_source}';"
+            
+        elif property_name == "collation":
+            forward = f"""-- Modify Table Collation: {table_name}
+-- From: {source_value}
+-- To: {target_value}
+ALTER TABLE {table_name} COLLATE={target_value};"""
+            rollback = f"ALTER TABLE {table_name} COLLATE={source_value};"
+            
+        else:
+            # Unknown property
+            forward = f"""-- Modify Table Property '{property_name}': {table_name}
+-- From: {source_value}
+-- To: {target_value}
+-- TODO: Implement ALTER TABLE for {property_name};"""
+            rollback = f"-- TODO: Rollback table property {property_name};"
+        
+        return forward, rollback
+    
     def _gen_create_table(self, diff: Difference) -> Tuple[str, str]:
         """Generate CREATE TABLE statement"""
         table_name = f"`{diff.schema_name}`.`{diff.object_name}`"
@@ -341,7 +394,20 @@ class SyncScriptGenerator:
                         else:
                             extra = ""
                         
-                        col_def = f"`{col_name}` {col_type} {nullable} {default} {extra}".strip()
+                        # Add comment, charset, collation
+                        comment = col_info.get("comment", "")
+                        comment_clause = ""
+                        if comment:
+                            escaped_comment = str(comment).replace("'", "''")
+                            comment_clause = f"COMMENT '{escaped_comment}'"
+                        
+                        charset = col_info.get("character_set", "")
+                        charset_clause = f"CHARACTER SET {charset}" if charset else ""
+                        
+                        collation = col_info.get("collation", "")
+                        collation_clause = f"COLLATE {collation}" if collation else ""
+                        
+                        col_def = f"`{col_name}` {col_type} {charset_clause} {collation_clause} {nullable} {default} {extra} {comment_clause}".strip()
                         # Clean up multiple spaces
                         col_def = " ".join(col_def.split())
                         col_defs.append(col_def)
@@ -359,7 +425,14 @@ class SyncScriptGenerator:
                     engine_clause = f" ENGINE={engine}" if engine else ""
                     collation_clause = f" COLLATE={collation}" if collation else ""
                     
-                    forward = f"CREATE TABLE {table_name} (\n  " + ",\n  ".join(col_defs) + f"\n){engine_clause}{collation_clause};"
+                    # Add table comment if exists
+                    comment = table_data.get("comment", "")
+                    comment_clause = ""
+                    if comment:
+                        escaped_comment = str(comment).replace("'", "''")
+                        comment_clause = f" COMMENT='{escaped_comment}'"
+                    
+                    forward = f"CREATE TABLE {table_name} (\n  " + ",\n  ".join(col_defs) + f"\n){engine_clause}{collation_clause}{comment_clause};"
                     rollback = f"DROP TABLE IF EXISTS {table_name};"
                     return forward, rollback
         
@@ -382,49 +455,141 @@ class SyncScriptGenerator:
     
     # Column generators
     def _gen_add_column(self, diff: Difference) -> Tuple[str, str]:
-        """Generate ADD COLUMN statement"""
+        """Generate ADD COLUMN statement
+        COLUMN_ADDED means column exists ONLY in target, not in source.
+        Forward: Make target like source = DROP this column from target
+        """
         table_name = f"`{diff.schema_name}`.`{diff.object_name}`"
         column_name = f"`{diff.sub_object_name}`"
         
+        # COLUMN_ADDED: target has it, source doesn't
+        # Forward: DROP from target (to match source)
+        # Rollback: ADD back to target
+        
         if diff.target_value:
-            # Handle both dict and string formats
+            # Build rollback statement with full column info
             if isinstance(diff.target_value, dict):
                 col_def = diff.target_value
+                column_definition = self._build_column_definition(col_def)
+                
                 column_type = col_def.get("column_type", "VARCHAR(255)")
                 nullable = "NULL" if col_def.get("is_nullable", True) else "NOT NULL"
                 default_val = col_def.get("column_default")
-                default = f"DEFAULT '{default_val}'" if default_val and default_val != "NULL" else ""
+                comment = col_def.get("comment")
                 
-                forward = f"""-- Add Column: {column_name}
--- Type: {column_type}
--- Nullable: {nullable}
--- Default: {default_val or 'None'}
-ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type} {nullable} {default};""".strip()
+                # Build detailed comment for rollback
+                details = [f"Type: {column_type}", f"Nullable: {nullable}"]
+                if default_val:
+                    details.append(f"Default: {default_val}")
+                if comment:
+                    details.append(f"Comment: {comment}")
+                
+                rollback = f"""-- Re-add Column: {column_name}
+-- {', '.join(details)}
+ALTER TABLE {table_name} ADD COLUMN {column_name} {column_definition};"""
             else:
-                # If it's a string, it's likely just the column type
                 column_type = str(diff.target_value)
-                forward = f"""-- Add Column: {column_name}
--- Type: {column_type}
-ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type} NULL;"""
+                rollback = f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type} NULL;"
             
-            rollback = f"ALTER TABLE {table_name} DROP COLUMN {column_name};"
+            forward = f"""-- Drop Column (exists only in target, not in source): {column_name}
+ALTER TABLE {table_name} DROP COLUMN {column_name};"""
+            
+            self.warnings.append(f"Dropping column {table_name}.{column_name} - data will be lost!")
             
             return forward, rollback
         
         return None, None
     
     def _gen_drop_column(self, diff: Difference) -> Tuple[str, str]:
-        """Generate DROP COLUMN statement"""
+        """Generate DROP COLUMN statement
+        COLUMN_REMOVED means column exists ONLY in source, not in target.
+        Forward: Make target like source = ADD this column to target
+        """
         table_name = f"`{diff.schema_name}`.`{diff.object_name}`"
         column_name = f"`{diff.sub_object_name}`"
         
-        forward = f"ALTER TABLE {table_name} DROP COLUMN {column_name};"
-        rollback = f"-- TODO: ADD COLUMN {column_name} BACK WITH ORIGINAL DEFINITION;"
+        # COLUMN_REMOVED: source has it, target doesn't
+        # Forward: ADD to target (to match source)
+        # Rollback: DROP from target
         
-        self.warnings.append(f"Dropping column {table_name}.{column_name} - data will be lost!")
-        
+        if diff.source_value:
+            # Build forward statement with full column info
+            if isinstance(diff.source_value, dict):
+                col_def = diff.source_value
+                column_definition = self._build_column_definition(col_def)
+                
+                column_type = col_def.get("column_type", "VARCHAR(255)")
+                nullable = "NULL" if col_def.get("is_nullable", True) else "NOT NULL"
+                default_val = col_def.get("column_default")
+                comment = col_def.get("comment")
+                charset = col_def.get("character_set")
+                collation = col_def.get("collation")
+                
+                # Build detailed comment
+                details = [f"Type: {column_type}", f"Nullable: {nullable}"]
+                if default_val:
+                    details.append(f"Default: {default_val}")
+                if comment:
+                    details.append(f"Comment: {comment}")
+                if charset:
+                    details.append(f"Charset: {charset}")
+                if collation:
+                    details.append(f"Collation: {collation}")
+                
+                forward = f"""-- Add Column (exists only in source, not in target): {column_name}
+-- {', '.join(details)}
+ALTER TABLE {table_name} ADD COLUMN {column_name} {column_definition};"""
+            else:
+                column_type = str(diff.source_value)
+                forward = f"""-- Add Column: {column_name}
+-- Type: {column_type}
+ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type} NULL;"""
+            
+            rollback = f"""-- Drop Column: {column_name}
+ALTER TABLE {table_name} DROP COLUMN {column_name};"""
+
+            return forward, rollback
+
+        return None, None
+
+    def _gen_rename_column(self, diff: Difference) -> Tuple[str, str]:
+        """Generate CHANGE COLUMN statement for column rename
+
+        MySQL syntax: ALTER TABLE table_name CHANGE COLUMN old_name new_name column_definition;
+
+        diff.sub_object_name = source column name (what we want to rename TO)
+        diff.source_display_value = source column name (desired name)
+        diff.target_display_value = target column name (current name)
+        diff.source_value = source column info (full definition for the new name)
+        diff.target_value = target column info (full definition for the current name)
+        """
+        table_name = f"`{diff.schema_name}`.`{diff.object_name}`"
+
+        # source_display_value = what we want (source column name)
+        # target_display_value = current state (target column name)
+        new_name = diff.source_display_value or diff.sub_object_name
+        old_name = diff.target_display_value
+
+        if not old_name or not new_name:
+            return None, None
+
+        # Build column definition from source (what we want it to become)
+        source_info = diff.source_value if isinstance(diff.source_value, dict) else {}
+        column_definition = self._build_column_definition(source_info) if source_info else "VARCHAR(255)"
+
+        # Build rollback definition from target (what it was)
+        target_info = diff.target_value if isinstance(diff.target_value, dict) else {}
+        rollback_definition = self._build_column_definition(target_info) if target_info else "VARCHAR(255)"
+
+        forward = f"""-- Rename Column: {old_name} → {new_name}
+-- Table: {table_name}
+ALTER TABLE {table_name} CHANGE COLUMN `{old_name}` `{new_name}` {column_definition};"""
+
+        rollback = f"""-- Rollback Column Rename: {new_name} → {old_name}
+ALTER TABLE {table_name} CHANGE COLUMN `{new_name}` `{old_name}` {rollback_definition};"""
+
         return forward, rollback
-    
+
     def _build_column_definition(self, col_info: dict, override_type: str = None, override_nullable: bool = None, override_default: str = None) -> str:
         """Build complete column definition preserving all attributes
         
@@ -442,6 +607,14 @@ ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type} NULL;"""
         
         # Column type
         col_type = override_type if override_type else col_info.get("column_type", "VARCHAR(255)")
+        
+        # Character set (for text-based columns)
+        charset = col_info.get("character_set", "")
+        charset_clause = f" CHARACTER SET {charset}" if charset else ""
+        
+        # Collation (for text-based columns)
+        collation = col_info.get("collation", "")
+        collation_clause = f" COLLATE {collation}" if collation else ""
         
         # Nullable
         if override_nullable is not None:
@@ -481,7 +654,7 @@ ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type} NULL;"""
             escaped_comment = comment.replace("'", "''")
             comment_clause = f" COMMENT '{escaped_comment}'"
         
-        return f"{col_type} {nullable}{default_clause}{extra_clause}{comment_clause}".strip()
+        return f"{col_type}{charset_clause}{collation_clause} {nullable}{default_clause}{extra_clause}{comment_clause}".strip()
     
     def _gen_alter_column_type(self, diff: Difference) -> Tuple[str, str]:
         """Generate ALTER COLUMN TYPE statement"""
@@ -495,20 +668,21 @@ ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type} NULL;"""
         target_type = target_info.get("column_type", diff.target_value) if target_info else diff.target_value
         source_type = source_info.get("column_type", diff.source_value) if source_info else diff.source_value
         
-        # Build complete column definition with new type but preserving other attributes
-        # For forward: use target type but preserve source's other attributes (comment, etc.)
-        forward_def = self._build_column_definition(source_info, override_type=target_type) if source_info else target_type
-        rollback_def = self._build_column_definition(source_info) if source_info else source_type
+        # Build complete column definition
+        # Forward: Make target look like source (use source's complete definition)
+        forward_def = self._build_column_definition(source_info) if source_info else source_type
+        # Rollback: Restore target's original definition
+        rollback_def = self._build_column_definition(target_info) if target_info else target_type
         
         forward = f"""-- Modify Column Type: {column_name}
--- From: {source_type}
--- To: {target_type}
+-- From: {target_type}
+-- To: {source_type}
 -- WARNING: Data conversion may be required
 ALTER TABLE {table_name} MODIFY COLUMN {column_name} {forward_def};"""
         
         rollback = f"""-- Rollback Column Type: {column_name}
--- From: {target_type}
--- To: {source_type}
+-- From: {source_type}
+-- To: {target_type}
 ALTER TABLE {table_name} MODIFY COLUMN {column_name} {rollback_def};"""
         
         return forward, rollback
@@ -524,20 +698,17 @@ ALTER TABLE {table_name} MODIFY COLUMN {column_name} {rollback_def};"""
         
         # If we have full column info, use _build_column_definition
         if source_info and target_info:
-            # Build forward: use target's default with source's other attributes
-            forward_def = self._build_column_definition(
-                source_info, 
-                override_default=target_info.get('column_default')
-            )
-            # Build rollback: use source's default
-            rollback_def = self._build_column_definition(source_info)
+            # Forward: Make target look like source (use source's complete definition)
+            forward_def = self._build_column_definition(source_info)
+            # Rollback: Restore target's original definition
+            rollback_def = self._build_column_definition(target_info)
             
             target_default = target_info.get('column_default', 'NULL')
             source_default = source_info.get('column_default', 'NULL')
             
             forward = f"""-- Modify Column Default: {column_name}
--- From: {source_default}
--- To: {target_default}
+-- From: {target_default}
+-- To: {source_default}
 ALTER TABLE {table_name} MODIFY COLUMN {column_name} {forward_def};"""
             
             rollback = f"ALTER TABLE {table_name} MODIFY COLUMN {column_name} {rollback_def};"
@@ -559,17 +730,17 @@ ALTER TABLE {table_name} MODIFY COLUMN {column_name} {forward_def};"""
                 # Quote string values
                 return f"'{val_str}'"
 
-            quoted_target = quote_default(target_default)
             quoted_source = quote_default(source_default)
+            quoted_target = quote_default(target_default)
 
             # Cannot generate proper MODIFY without full column info
             forward = f"""-- Modify Column Default: {column_name}
--- From: {source_default}
--- To: {target_default}
+-- From: {target_default}
+-- To: {source_default}
 -- WARNING: Full column definition needed. Using ALTER COLUMN (may not work in MySQL).
-ALTER TABLE {table_name} ALTER COLUMN {column_name} SET DEFAULT {quoted_target};"""
+ALTER TABLE {table_name} ALTER COLUMN {column_name} SET DEFAULT {quoted_source};"""
 
-            rollback = f"ALTER TABLE {table_name} ALTER COLUMN {column_name} SET DEFAULT {quoted_source};"
+            rollback = f"ALTER TABLE {table_name} ALTER COLUMN {column_name} SET DEFAULT {quoted_target};"
         
         return forward, rollback
     
@@ -589,24 +760,73 @@ ALTER TABLE {table_name} ALTER COLUMN {column_name} SET DEFAULT {quoted_target};
         target_nullable = "NULL" if target_is_nullable else "NOT NULL"
         source_nullable = "NULL" if source_is_nullable else "NOT NULL"
         
-        # Build complete column definition preserving all attributes
-        forward_def = self._build_column_definition(source_info, override_nullable=target_is_nullable) if source_info else f"VARCHAR(255) {target_nullable}"
-        rollback_def = self._build_column_definition(source_info) if source_info else f"VARCHAR(255) {source_nullable}"
+        # Build complete column definition
+        # Forward: Make target look like source (use source's complete definition)
+        forward_def = self._build_column_definition(source_info) if source_info else f"VARCHAR(255) {source_nullable}"
+        # Rollback: Restore target's original definition
+        rollback_def = self._build_column_definition(target_info) if target_info else f"VARCHAR(255) {target_nullable}"
         
-        # Generate SQL based on target nullable state
-        if not target_is_nullable:
+        # Generate SQL based on source nullable state (what we're changing TO)
+        if not source_is_nullable:
             forward = f"""-- Modify Column Nullable: {column_name}
--- From: {source_nullable}
--- To: {target_nullable}
+-- From: {target_nullable}
+-- To: {source_nullable}
 -- WARNING: Ensure no NULL values exist in column
 ALTER TABLE {table_name} MODIFY COLUMN {column_name} {forward_def};"""
         else:
             forward = f"""-- Modify Column Nullable: {column_name}
--- From: {source_nullable}
--- To: {target_nullable}
+-- From: {target_nullable}
+-- To: {source_nullable}
 ALTER TABLE {table_name} MODIFY COLUMN {column_name} {forward_def};"""
         
         rollback = f"ALTER TABLE {table_name} MODIFY COLUMN {column_name} {rollback_def};"
+        
+        return forward, rollback
+    
+    def _gen_alter_column_extra(self, diff: Difference) -> Tuple[str, str]:
+        """Generate ALTER COLUMN statement for extra properties (comment, charset, collation, etc.)"""
+        table_name = f"`{diff.schema_name}`.`{diff.object_name}`"
+        column_name = f"`{diff.sub_object_name}`"
+        
+        # Get column info
+        target_info = diff.target_value if isinstance(diff.target_value, dict) else {}
+        source_info = diff.source_value if isinstance(diff.source_value, dict) else {}
+        
+        if not source_info or not target_info:
+            return None, None
+        
+        # Forward: Make target look like source (apply source's properties to target)
+        # We need to use target's base structure but override with source's changed property
+        forward_def = self._build_column_definition(source_info)
+        # Rollback: Restore target's original properties
+        rollback_def = self._build_column_definition(target_info)
+        
+        # Determine what changed based on description
+        description = diff.description.lower()
+        if "comment" in description:
+            change_type = "comment"
+            source_val = source_info.get("comment") or "(none)"
+            target_val = target_info.get("comment") or "(none)"
+        elif "charset" in description or "character set" in description:
+            change_type = "character set"
+            source_val = source_info.get("character_set") or "(none)"
+            target_val = target_info.get("character_set") or "(none)"
+        elif "collation" in description:
+            change_type = "collation"
+            source_val = source_info.get("collation") or "(none)"
+            target_val = target_info.get("collation") or "(none)"
+        else:
+            change_type = "extra properties"
+            source_val = source_info.get("extra") or "(none)"
+            target_val = target_info.get("extra") or "(none)"
+        
+        forward = f"""-- Modify Column {change_type.title()}: {column_name}
+-- From: {target_val}
+-- To: {source_val}
+ALTER TABLE {table_name} MODIFY COLUMN {column_name} {forward_def};"""
+        
+        rollback = f"""-- Rollback Column {change_type.title()}: {column_name}
+ALTER TABLE {table_name} MODIFY COLUMN {column_name} {rollback_def};"""
         
         return forward, rollback
     

@@ -137,6 +137,7 @@ export enum DiffType {
   COLUMN_DEFAULT_CHANGED = "column_default_changed",
   COLUMN_NULLABLE_CHANGED = "column_nullable_changed",
   COLUMN_EXTRA_CHANGED = "column_extra_changed",
+  COLUMN_RENAMED = "column_renamed",
   INDEX_MISSING_SOURCE = "index_missing_source",
   INDEX_MISSING_TARGET = "index_missing_target",
   INDEX_COLUMNS_CHANGED = "index_columns_changed",
@@ -199,6 +200,8 @@ export interface Difference {
   sub_object_name?: string
   source_value?: any
   target_value?: any
+  source_display_value?: string
+  target_display_value?: string
   description: string
   can_auto_fix: boolean
   fix_order: number

@@ -23,7 +23,8 @@ class DiffType(str, Enum):
     COLUMN_DEFAULT_CHANGED = "column_default_changed"
     COLUMN_NULLABLE_CHANGED = "column_nullable_changed"
     COLUMN_EXTRA_CHANGED = "column_extra_changed"
-    
+    COLUMN_RENAMED = "column_renamed"  # Same definition but different name
+
     # Index level
     INDEX_MISSING_SOURCE = "index_missing_source"
     INDEX_MISSING_TARGET = "index_missing_target"

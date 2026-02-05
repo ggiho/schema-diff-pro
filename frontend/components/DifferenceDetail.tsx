@@ -34,6 +34,14 @@ export function DifferenceDetail({ difference }: DifferenceDetailProps) {
     // Column type
     const colType = overrideType || colInfo.column_type || colInfo.data_type || 'VARCHAR(255)'
 
+    // Character set (for text-based columns)
+    const charset = colInfo.character_set
+    const charsetClause = charset ? ` CHARACTER SET ${charset}` : ''
+
+    // Collation (for text-based columns)
+    const collation = colInfo.collation
+    const collationClause = collation ? ` COLLATE ${collation}` : ''
+
     // Nullable
     let nullable: string
     if (overrideNullable !== undefined) {
@@ -67,7 +75,7 @@ export function DifferenceDetail({ difference }: DifferenceDetailProps) {
       commentClause = ` COMMENT '${escapedComment}'`
     }
 
-    return `${colType} ${nullable}${defaultClause}${extraClause}${commentClause}`.trim()
+    return `${colType}${charsetClause}${collationClause} ${nullable}${defaultClause}${extraClause}${commentClause}`.trim()
   }
 
   const formatValue = (value: any, type: ObjectType) => {
@@ -102,7 +110,23 @@ export function DifferenceDetail({ difference }: DifferenceDetailProps) {
             <p className="text-sm">{value.is_nullable ? 'YES' : 'NO'}</p>
           </div>
         </div>
-        {value.column_default && (
+        {(value.character_set || value.collation) && (
+          <div className="grid grid-cols-2 gap-4">
+            {value.character_set && (
+              <div>
+                <span className="text-xs font-medium text-muted-foreground">Charset:</span>
+                <p className="text-sm font-mono">{value.character_set}</p>
+              </div>
+            )}
+            {value.collation && (
+              <div>
+                <span className="text-xs font-medium text-muted-foreground">Collation:</span>
+                <p className="text-sm font-mono">{value.collation}</p>
+              </div>
+            )}
+          </div>
+        )}
+        {value.column_default !== undefined && value.column_default !== null && (
           <div>
             <span className="text-xs font-medium text-muted-foreground">Default:</span>
             <p className="text-sm font-mono">{value.column_default}</p>
@@ -112,6 +136,12 @@ export function DifferenceDetail({ difference }: DifferenceDetailProps) {
           <div>
             <span className="text-xs font-medium text-muted-foreground">Extra:</span>
             <p className="text-sm">{value.extra}</p>
+          </div>
+        )}
+        {value.comment && (
+          <div>
+            <span className="text-xs font-medium text-muted-foreground">Comment:</span>
+            <p className="text-sm">{value.comment}</p>
           </div>
         )}
       </div>
@@ -423,7 +453,27 @@ export function DifferenceDetail({ difference }: DifferenceDetailProps) {
           }
         }
         return `-- Unable to determine target default value`
-        
+      
+      case DiffType.COLUMN_EXTRA_CHANGED:
+        // Handle comment, charset, collation changes
+        if (difference.target_value && typeof difference.target_value === 'object') {
+          const targetInfo = difference.target_value
+          const colDef = buildColumnDefinition(targetInfo)
+          return `-- Execute on SOURCE database:\nALTER TABLE ${tableName} MODIFY COLUMN ${columnName} ${colDef};`
+        }
+        return `-- Execute on SOURCE database:\n-- Modify column extra properties\nALTER TABLE ${tableName} MODIFY COLUMN ${columnName} /* update properties */;`
+
+      case DiffType.COLUMN_RENAMED:
+        // Column renamed: Option 1 = Rename in Source to match Target
+        // source_display_value = source name (desired), target_display_value = target name (current)
+        if (difference.target_value && typeof difference.target_value === 'object') {
+          const targetName = difference.target_display_value || 'target_name'
+          const sourceName = difference.source_display_value || difference.sub_object_name
+          const colDef = buildColumnDefinition(difference.target_value)
+          return `-- Execute on SOURCE database:\n-- Rename column to match target\nALTER TABLE ${tableName} CHANGE COLUMN \`${sourceName}\` \`${targetName}\` ${colDef};`
+        }
+        return `-- Execute on SOURCE database:\nALTER TABLE ${tableName} CHANGE COLUMN ${columnName} \`new_name\` /* column definition */;`
+
       case DiffType.INDEX_MISSING_TARGET:
         // Source Only: Option 1 = Remove from Source
         return `-- Execute on SOURCE database:\nDROP INDEX ${columnName} ON ${tableName};`
@@ -644,7 +694,27 @@ export function DifferenceDetail({ difference }: DifferenceDetailProps) {
           }
         }
         return `-- Unable to determine source default value`
-        
+      
+      case DiffType.COLUMN_EXTRA_CHANGED:
+        // Handle comment, charset, collation changes
+        if (difference.source_value && typeof difference.source_value === 'object') {
+          const sourceInfo = difference.source_value
+          const colDef = buildColumnDefinition(sourceInfo)
+          return `-- Execute on TARGET database:\nALTER TABLE ${tableName} MODIFY COLUMN ${columnName} ${colDef};`
+        }
+        return `-- Execute on TARGET database:\n-- Modify column extra properties\nALTER TABLE ${tableName} MODIFY COLUMN ${columnName} /* update properties */;`
+
+      case DiffType.COLUMN_RENAMED:
+        // Column renamed: Option 2 = Rename in Target to match Source
+        // source_display_value = source name (desired), target_display_value = target name (current)
+        if (difference.source_value && typeof difference.source_value === 'object') {
+          const targetName = difference.target_display_value || 'target_name'
+          const sourceName = difference.source_display_value || difference.sub_object_name
+          const colDef = buildColumnDefinition(difference.source_value)
+          return `-- Execute on TARGET database:\n-- Rename column to match source\nALTER TABLE ${tableName} CHANGE COLUMN \`${targetName}\` \`${sourceName}\` ${colDef};`
+        }
+        return `-- Execute on TARGET database:\nALTER TABLE ${tableName} CHANGE COLUMN \`old_name\` ${columnName} /* column definition */;`
+
       case DiffType.INDEX_MISSING_TARGET:
         // Source Only: Option 2 = Add to Target
         if (difference.source_value) {

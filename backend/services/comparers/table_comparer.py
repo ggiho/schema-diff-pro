@@ -302,56 +302,136 @@ class TableComparer(BaseComparer):
                 fix_order=self.get_fix_order()
             ))
         
+        # Compare table comment
+        if not self.options.ignore_comments:
+            if source_table.get("comment") != target_table.get("comment"):
+                differences.append(Difference(
+                    diff_type=DiffType.TABLE_MISSING_TARGET,  # Using as table property changed
+                    severity=SeverityLevel.LOW,
+                    object_type=ObjectType.TABLE,
+                    schema_name=schema_name,
+                    object_name=table_name,
+                    sub_object_name="comment",
+                    source_value=source_table.get("comment"),
+                    target_value=target_table.get("comment"),
+                    description=f"Table comment differs: {source_table.get('comment') or '(none)'} → {target_table.get('comment') or '(none)'}",
+                    can_auto_fix=True,
+                    fix_order=self.get_fix_order()
+                ))
+        
+        # Compare table collation
+        if not self.options.ignore_collation:
+            if source_table.get("collation") != target_table.get("collation"):
+                differences.append(Difference(
+                    diff_type=DiffType.TABLE_MISSING_TARGET,  # Using as table property changed
+                    severity=SeverityLevel.MEDIUM,
+                    object_type=ObjectType.TABLE,
+                    schema_name=schema_name,
+                    object_name=table_name,
+                    sub_object_name="collation",
+                    source_value=source_table.get("collation"),
+                    target_value=target_table.get("collation"),
+                    description=f"Table collation differs: {source_table.get('collation')} → {target_table.get('collation')}",
+                    can_auto_fix=True,
+                    fix_order=self.get_fix_order()
+                ))
+        
         # Compare columns
         source_columns = source_table["columns"]
         target_columns = target_table["columns"]
-        
-        all_columns = set(list(source_columns.keys()) + list(target_columns.keys()))
-        
-        for column_name in all_columns:
-            source_col = source_columns.get(column_name)
-            target_col = target_columns.get(column_name)
-            
-            if source_col and not target_col:
-                # Column removed
+
+        # Collect columns that exist only in source or only in target
+        source_only_cols = {}  # Column name -> column info
+        target_only_cols = {}  # Column name -> column info
+
+        for col_name in source_columns:
+            if col_name not in target_columns:
+                source_only_cols[col_name] = source_columns[col_name]
+
+        for col_name in target_columns:
+            if col_name not in source_columns:
+                target_only_cols[col_name] = target_columns[col_name]
+
+        # Detect renames: match source-only columns with target-only columns
+        # based on similar properties (type, nullable, default, extra)
+        renamed_pairs = []  # List of (source_name, target_name, source_col, target_col)
+        matched_source_cols = set()
+        matched_target_cols = set()
+
+        for source_name, source_col in source_only_cols.items():
+            for target_name, target_col in target_only_cols.items():
+                if target_name in matched_target_cols:
+                    continue
+
+                # Check if columns have matching properties (likely a rename)
+                if self._columns_are_similar(source_col, target_col):
+                    renamed_pairs.append((source_name, target_name, source_col, target_col))
+                    matched_source_cols.add(source_name)
+                    matched_target_cols.add(target_name)
+                    break
+
+        # Create COLUMN_RENAMED differences
+        for source_name, target_name, source_col, target_col in renamed_pairs:
+            differences.append(Difference(
+                diff_type=DiffType.COLUMN_RENAMED,
+                severity=SeverityLevel.MEDIUM,
+                object_type=ObjectType.COLUMN,
+                schema_name=schema_name,
+                object_name=table_name,
+                sub_object_name=source_name,  # Store source name as the primary
+                source_value=source_col,  # Full source column info
+                target_value=target_col,  # Full target column info (has the current name)
+                source_display_value=source_name,  # Source column name (desired)
+                target_display_value=target_name,  # Target column name (current)
+                description=f"Column renamed: '{target_name}' → '{source_name}'",
+                can_auto_fix=True,
+                fix_order=self.get_fix_order() + 1
+            ))
+
+        # Create COLUMN_REMOVED for unmatched source-only columns
+        for col_name in source_only_cols:
+            if col_name not in matched_source_cols:
                 differences.append(Difference(
                     diff_type=DiffType.COLUMN_REMOVED,
                     severity=SeverityLevel.CRITICAL,
                     object_type=ObjectType.COLUMN,
                     schema_name=schema_name,
                     object_name=table_name,
-                    sub_object_name=column_name,
-                    source_value=source_col,
+                    sub_object_name=col_name,
+                    source_value=source_only_cols[col_name],
                     target_value=None,
-                    description=f"Column '{column_name}' exists only in source",
+                    description=f"Column '{col_name}' exists only in source",
                     can_auto_fix=True,
                     fix_order=self.get_fix_order() + 1,
                     warnings=["Potential data loss if column is dropped"]
                 ))
-            
-            elif not source_col and target_col:
-                # Column added
+
+        # Create COLUMN_ADDED for unmatched target-only columns
+        for col_name in target_only_cols:
+            if col_name not in matched_target_cols:
                 differences.append(Difference(
                     diff_type=DiffType.COLUMN_ADDED,
                     severity=SeverityLevel.LOW,
                     object_type=ObjectType.COLUMN,
                     schema_name=schema_name,
                     object_name=table_name,
-                    sub_object_name=column_name,
+                    sub_object_name=col_name,
                     source_value=None,
-                    target_value=target_col,
-                    description=f"Column '{column_name}' exists only in target",
+                    target_value=target_only_cols[col_name],
+                    description=f"Column '{col_name}' exists only in target",
                     can_auto_fix=True,
                     fix_order=self.get_fix_order() + 1
                 ))
-            
-            elif source_col and target_col:
-                # Column exists in both - compare properties
-                col_diffs = self._compare_column_properties(
-                    schema_name, table_name, column_name, source_col, target_col
-                )
-                differences.extend(col_diffs)
-        
+
+        # Columns that exist in both - compare properties
+        common_columns = set(source_columns.keys()) & set(target_columns.keys())
+        for column_name in common_columns:
+            col_diffs = self._compare_column_properties(
+                schema_name, table_name, column_name,
+                source_columns[column_name], target_columns[column_name]
+            )
+            differences.extend(col_diffs)
+
         return differences
     
     def _compare_column_properties(
@@ -441,4 +521,103 @@ class TableComparer(BaseComparer):
                     fix_order=self.get_fix_order() + 1
                 ))
         
+        # Compare comment
+        if not self.options.ignore_comments:
+            if source_col["comment"] != target_col["comment"]:
+                differences.append(Difference(
+                    diff_type=DiffType.COLUMN_EXTRA_CHANGED,
+                    severity=SeverityLevel.LOW,
+                    object_type=ObjectType.COLUMN,
+                    schema_name=schema_name,
+                    object_name=table_name,
+                    sub_object_name=column_name,
+                    source_value=source_col,  # Pass full column info for proper MODIFY COLUMN
+                    target_value=target_col,  # Pass full column info for proper MODIFY COLUMN
+                    source_display_value=f"comment: {source_col['comment'] or '(none)'}",
+                    target_display_value=f"comment: {target_col['comment'] or '(none)'}",
+                    description=f"Column comment changed",
+                    can_auto_fix=True,
+                    fix_order=self.get_fix_order() + 1
+                ))
+        
+        # Compare charset
+        if not self.options.ignore_charset:
+            if source_col.get("character_set") != target_col.get("character_set"):
+                # Only compare charset for character-based columns
+                if source_col.get("character_set") or target_col.get("character_set"):
+                    differences.append(Difference(
+                        diff_type=DiffType.COLUMN_EXTRA_CHANGED,
+                        severity=SeverityLevel.MEDIUM,
+                        object_type=ObjectType.COLUMN,
+                        schema_name=schema_name,
+                        object_name=table_name,
+                        sub_object_name=column_name,
+                        source_value=source_col,  # Pass full column info for proper MODIFY COLUMN
+                        target_value=target_col,  # Pass full column info for proper MODIFY COLUMN
+                        source_display_value=f"charset: {source_col.get('character_set') or '(none)'}",
+                        target_display_value=f"charset: {target_col.get('character_set') or '(none)'}",
+                        description=f"Column character set changed",
+                        can_auto_fix=True,
+                        fix_order=self.get_fix_order() + 1
+                    ))
+        
+        # Compare collation
+        if not self.options.ignore_collation:
+            if source_col.get("collation") != target_col.get("collation"):
+                # Only compare collation for character-based columns
+                if source_col.get("collation") or target_col.get("collation"):
+                    differences.append(Difference(
+                        diff_type=DiffType.COLUMN_EXTRA_CHANGED,
+                        severity=SeverityLevel.MEDIUM,
+                        object_type=ObjectType.COLUMN,
+                        schema_name=schema_name,
+                        object_name=table_name,
+                        sub_object_name=column_name,
+                        source_value=source_col,  # Pass full column info for proper MODIFY COLUMN
+                        target_value=target_col,  # Pass full column info for proper MODIFY COLUMN
+                        source_display_value=f"collation: {source_col.get('collation') or '(none)'}",
+                        target_display_value=f"collation: {target_col.get('collation') or '(none)'}",
+                        description=f"Column collation changed",
+                        can_auto_fix=True,
+                        fix_order=self.get_fix_order() + 1
+                    ))
+
         return differences
+
+    def _columns_are_similar(
+        self,
+        source_col: Dict[str, Any],
+        target_col: Dict[str, Any]
+    ) -> bool:
+        """Check if two columns are similar enough to be considered a rename.
+
+        Columns are considered similar if they have matching:
+        - column_type (data type with length/precision)
+        - is_nullable
+        - column_default (or both are None)
+        - extra (auto_increment, etc.)
+
+        We don't check ordinal_position because column order might change during rename.
+        We don't check comment because that's often changed during rename.
+        """
+        # Column type must match exactly
+        if source_col.get("column_type") != target_col.get("column_type"):
+            return False
+
+        # Nullable must match
+        if source_col.get("is_nullable") != target_col.get("is_nullable"):
+            return False
+
+        # Default value must match (comparing as strings for consistency)
+        source_default = source_col.get("column_default")
+        target_default = target_col.get("column_default")
+        if str(source_default) != str(target_default):
+            return False
+
+        # Extra (auto_increment, etc.) must match
+        source_extra = (source_col.get("extra") or "").lower()
+        target_extra = (target_col.get("extra") or "").lower()
+        if source_extra != target_extra:
+            return False
+
+        return True
