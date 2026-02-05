@@ -483,10 +483,18 @@ ALTER TABLE {table_name} COLLATE={target_value};"""
                     details.append(f"Default: {default_val}")
                 if comment:
                     details.append(f"Comment: {comment}")
-                
+
+                # Determine column position (AFTER or FIRST)
+                after_column = col_def.get("after_column")
+                position_clause = ""
+                if after_column:
+                    position_clause = f" AFTER `{after_column}`"
+                elif col_def.get("ordinal_position") == 1:
+                    position_clause = " FIRST"
+
                 rollback = f"""-- Re-add Column: {column_name}
 -- {', '.join(details)}
-ALTER TABLE {table_name} ADD COLUMN {column_name} {column_definition};"""
+ALTER TABLE {table_name} ADD COLUMN {column_name} {column_definition}{position_clause};"""
             else:
                 column_type = str(diff.target_value)
                 rollback = f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type} NULL;"
@@ -536,9 +544,17 @@ ALTER TABLE {table_name} DROP COLUMN {column_name};"""
                 if collation:
                     details.append(f"Collation: {collation}")
                 
+                # Determine column position (AFTER or FIRST)
+                after_column = col_def.get("after_column")
+                position_clause = ""
+                if after_column:
+                    position_clause = f" AFTER `{after_column}`"
+                elif col_def.get("ordinal_position") == 1:
+                    position_clause = " FIRST"
+
                 forward = f"""-- Add Column (exists only in source, not in target): {column_name}
 -- {', '.join(details)}
-ALTER TABLE {table_name} ADD COLUMN {column_name} {column_definition};"""
+ALTER TABLE {table_name} ADD COLUMN {column_name} {column_definition}{position_clause};"""
             else:
                 column_type = str(diff.source_value)
                 forward = f"""-- Add Column: {column_name}

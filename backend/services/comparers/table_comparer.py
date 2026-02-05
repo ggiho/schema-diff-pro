@@ -1,4 +1,4 @@
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 import logging
 from sqlalchemy import text
 
@@ -391,6 +391,11 @@ class TableComparer(BaseComparer):
         # Create COLUMN_REMOVED for unmatched source-only columns
         for col_name in source_only_cols:
             if col_name not in matched_source_cols:
+                col_info = source_only_cols[col_name].copy()
+                # Add previous column info for AFTER clause in ADD COLUMN
+                col_info["after_column"] = self._get_previous_column(
+                    source_columns, col_info.get("ordinal_position", 0)
+                )
                 differences.append(Difference(
                     diff_type=DiffType.COLUMN_REMOVED,
                     severity=SeverityLevel.CRITICAL,
@@ -398,7 +403,7 @@ class TableComparer(BaseComparer):
                     schema_name=schema_name,
                     object_name=table_name,
                     sub_object_name=col_name,
-                    source_value=source_only_cols[col_name],
+                    source_value=col_info,
                     target_value=None,
                     description=f"Column '{col_name}' exists only in source",
                     can_auto_fix=True,
@@ -409,6 +414,11 @@ class TableComparer(BaseComparer):
         # Create COLUMN_ADDED for unmatched target-only columns
         for col_name in target_only_cols:
             if col_name not in matched_target_cols:
+                col_info = target_only_cols[col_name].copy()
+                # Add previous column info for AFTER clause in ADD COLUMN
+                col_info["after_column"] = self._get_previous_column(
+                    target_columns, col_info.get("ordinal_position", 0)
+                )
                 differences.append(Difference(
                     diff_type=DiffType.COLUMN_ADDED,
                     severity=SeverityLevel.LOW,
@@ -417,7 +427,7 @@ class TableComparer(BaseComparer):
                     object_name=table_name,
                     sub_object_name=col_name,
                     source_value=None,
-                    target_value=target_only_cols[col_name],
+                    target_value=col_info,
                     description=f"Column '{col_name}' exists only in target",
                     can_auto_fix=True,
                     fix_order=self.get_fix_order() + 1
@@ -621,3 +631,36 @@ class TableComparer(BaseComparer):
             return False
 
         return True
+
+    def _get_previous_column(
+        self,
+        columns: Dict[str, Any],
+        ordinal_position: int
+    ) -> Optional[str]:
+        """Get the name of the column that comes before the given ordinal position.
+
+        Args:
+            columns: Dict of column_name -> column_info
+            ordinal_position: The ordinal position of the column
+
+        Returns:
+            Name of the previous column, or None if this is the first column
+        """
+        if ordinal_position <= 1:
+            return None  # First column, use FIRST instead of AFTER
+
+        # Find the column with ordinal_position - 1
+        for col_name, col_info in columns.items():
+            if col_info.get("ordinal_position") == ordinal_position - 1:
+                return col_name
+
+        # Fallback: find the closest column with lower ordinal_position
+        prev_col = None
+        prev_pos = 0
+        for col_name, col_info in columns.items():
+            pos = col_info.get("ordinal_position", 0)
+            if pos < ordinal_position and pos > prev_pos:
+                prev_col = col_name
+                prev_pos = pos
+
+        return prev_col
