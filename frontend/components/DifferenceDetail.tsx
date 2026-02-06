@@ -401,55 +401,63 @@ export function DifferenceDetail({ difference }: DifferenceDetailProps) {
         
       case DiffType.COLUMN_TYPE_CHANGED:
         if (difference.target_value) {
-          // Get target type
-          const targetType = typeof difference.target_value === 'string' 
-            ? difference.target_value 
-            : difference.target_value.column_type || difference.target_value.data_type
-          
-          // Use source column info to preserve other attributes (comment, default, etc.)
-          const sourceInfo = typeof difference.source_value === 'object' ? difference.source_value : null
-          
-          if (sourceInfo) {
-            // Build complete definition with new type but preserving source's other attributes
-            const colDef = buildColumnDefinition(sourceInfo, targetType)
+          // Target → Source: Make Source like Target (use ALL of Target's attributes)
+          const targetInfo = typeof difference.target_value === 'object' ? difference.target_value : null
+
+          if (targetInfo) {
+            const colDef = buildColumnDefinition(targetInfo)
             return `-- Execute on SOURCE database:\nALTER TABLE ${tableName} MODIFY COLUMN ${columnName} ${colDef};`
           }
-          
+
+          const targetType = typeof difference.target_value === 'string'
+            ? difference.target_value
+            : difference.target_value.column_type || difference.target_value.data_type
           return `-- Execute on SOURCE database:\nALTER TABLE ${tableName} MODIFY COLUMN ${columnName} ${targetType};`
         }
         return `-- Unable to determine target column type`
         
       case DiffType.COLUMN_NULLABLE_CHANGED:
         if (difference.target_value !== undefined) {
-          // Get target nullable state
-          const targetNullable = typeof difference.target_value === 'object' 
-            ? difference.target_value.is_nullable 
-            : difference.target_value
-          
-          // Use source column info to preserve other attributes (comment, default, etc.)
-          const sourceInfo = typeof difference.source_value === 'object' ? difference.source_value : null
-          
-          if (sourceInfo) {
-            // Build complete definition with new nullable but preserving source's other attributes
-            const colDef = buildColumnDefinition(sourceInfo, undefined, targetNullable)
+          // Target → Source: Make Source like Target (use ALL of Target's attributes)
+          const targetInfo = typeof difference.target_value === 'object' ? difference.target_value : null
+
+          if (targetInfo) {
+            const colDef = buildColumnDefinition(targetInfo)
             return `-- Execute on SOURCE database:\nALTER TABLE ${tableName} MODIFY COLUMN ${columnName} ${colDef};`
           }
-          
-          const columnType = typeof difference.source_value === 'object' 
-            ? difference.source_value.column_type 
+
+          const targetNullable = typeof difference.target_value === 'object'
+            ? difference.target_value.is_nullable
+            : difference.target_value
+          const columnType = typeof difference.target_value === 'object'
+            ? difference.target_value.column_type
             : 'VARCHAR(255)'
           const nullable = targetNullable ? 'NULL' : 'NOT NULL'
-          
+
           return `-- Execute on SOURCE database:\nALTER TABLE ${tableName} MODIFY COLUMN ${columnName} ${columnType} ${nullable};`
         }
-        return `-- Unable to determine target nullable state`
+        return `-- Unable to determine target column info`
         
       case DiffType.COLUMN_DEFAULT_CHANGED:
         if (difference.target_value !== undefined) {
+          // Target → Source: Make Source like Target (use Target's attributes)
+          const targetInfo = typeof difference.target_value === 'object' ? difference.target_value : null
+
+          if (targetInfo) {
+            // Use full column definition with MODIFY COLUMN
+            const colDef = buildColumnDefinition(targetInfo)
+            return `-- Execute on SOURCE database:\nALTER TABLE ${tableName} MODIFY COLUMN ${columnName} ${colDef};`
+          }
+
+          // Fallback for primitive value
           if (difference.target_value === null) {
             return `-- Execute on SOURCE database:\nALTER TABLE ${tableName} ALTER COLUMN ${columnName} DROP DEFAULT;`
           } else {
-            return `-- Execute on SOURCE database:\nALTER TABLE ${tableName} ALTER COLUMN ${columnName} SET DEFAULT ${difference.target_value};`
+            const defaultVal = String(difference.target_value)
+            const quotedDefault = defaultVal.toUpperCase().startsWith('CURRENT_') || defaultVal.toUpperCase() === 'NULL'
+              ? defaultVal
+              : `'${defaultVal}'`
+            return `-- Execute on SOURCE database:\nALTER TABLE ${tableName} ALTER COLUMN ${columnName} SET DEFAULT ${quotedDefault};`
           }
         }
         return `-- Unable to determine target default value`
@@ -521,37 +529,50 @@ export function DifferenceDetail({ difference }: DifferenceDetailProps) {
         return `-- NOT RECOMMENDED: Duplicate index should be removed from target instead`
         
       case DiffType.CONSTRAINT_MISSING_TARGET:
+        // Constraint exists only in SOURCE, missing in TARGET
+        // Target → Source: DROP from SOURCE (to match Target which doesn't have it)
+        if (difference.source_value) {
+          const const_data = difference.source_value
+          const constraintType = const_data.constraint_type
+          if (constraintType === 'PRIMARY KEY') {
+            return `-- Execute on SOURCE database:\nALTER TABLE ${tableName} DROP PRIMARY KEY;`
+          } else if (constraintType === 'FOREIGN KEY') {
+            return `-- Execute on SOURCE database:\nALTER TABLE ${tableName} DROP FOREIGN KEY ${columnName};`
+          } else if (constraintType === 'UNIQUE') {
+            return `-- Execute on SOURCE database:\nALTER TABLE ${tableName} DROP INDEX ${columnName};`
+          }
+        }
+        return `-- Execute on SOURCE database:\nALTER TABLE ${tableName} DROP CONSTRAINT ${columnName};`
+
+      case DiffType.CONSTRAINT_MISSING_SOURCE:
+        // Constraint exists only in TARGET, missing in SOURCE
+        // Target → Source: ADD to SOURCE (to match Target which has it)
         if (difference.target_value) {
           const const_data = difference.target_value
           const constraintType = const_data.constraint_type
-          
+
           if (constraintType === 'FOREIGN KEY') {
             const columns = const_data.columns || 'column_name'
             const refTable = `\`${const_data.referenced_table_schema}\`.\`${const_data.referenced_table_name}\``
             const refColumns = const_data.referenced_columns || 'ref_column'
             const updateRule = const_data.update_rule || 'RESTRICT'
             const deleteRule = const_data.delete_rule || 'RESTRICT'
-            return `ALTER TABLE ${tableName} ADD CONSTRAINT ${columnName} FOREIGN KEY (${columns}) REFERENCES ${refTable} (${refColumns}) ON UPDATE ${updateRule} ON DELETE ${deleteRule};`
+            return `-- Execute on SOURCE database:\nALTER TABLE ${tableName} ADD CONSTRAINT ${columnName} FOREIGN KEY (${columns}) REFERENCES ${refTable} (${refColumns}) ON UPDATE ${updateRule} ON DELETE ${deleteRule};`
           } else if (constraintType === 'PRIMARY KEY') {
             const columns = const_data.columns || 'column_name'
-            return `ALTER TABLE ${tableName} ADD PRIMARY KEY (${columns});`
+            return `-- Execute on SOURCE database:\nALTER TABLE ${tableName} ADD PRIMARY KEY (${columns});`
           } else if (constraintType === 'UNIQUE') {
             const columns = const_data.columns || 'column_name'
-            return `ALTER TABLE ${tableName} ADD CONSTRAINT ${columnName} UNIQUE (${columns});`
+            return `-- Execute on SOURCE database:\nALTER TABLE ${tableName} ADD CONSTRAINT ${columnName} UNIQUE (${columns});`
           } else if (constraintType === 'CHECK') {
-            const columns = const_data.columns || 'column_name'
             const checkClause = const_data.check_clause || 'CHECK_CONDITION'
-            return `ALTER TABLE ${tableName} ADD CONSTRAINT ${columnName} CHECK (${checkClause});`
+            return `-- Execute on SOURCE database:\nALTER TABLE ${tableName} ADD CONSTRAINT ${columnName} CHECK (${checkClause});`
           } else {
-            // Show available constraint info for unknown types
             const columns = const_data.columns || 'column_name'
-            return `ALTER TABLE ${tableName} ADD CONSTRAINT ${columnName} ${constraintType} (${columns});`
+            return `-- Execute on SOURCE database:\nALTER TABLE ${tableName} ADD CONSTRAINT ${columnName} ${constraintType} (${columns});`
           }
         }
         return `-- Unable to generate constraint definition - missing constraint data`
-        
-      case DiffType.CONSTRAINT_MISSING_SOURCE:
-        return `ALTER TABLE ${tableName} DROP CONSTRAINT ${columnName};`
       
       case DiffType.CONSTRAINT_RENAMED:
         // Constraint renamed: Option 1 = Rename in Source to match Target
@@ -642,55 +663,63 @@ export function DifferenceDetail({ difference }: DifferenceDetailProps) {
         
       case DiffType.COLUMN_TYPE_CHANGED:
         if (difference.source_value) {
-          // Get source type
-          const sourceType = typeof difference.source_value === 'string' 
-            ? difference.source_value 
-            : difference.source_value.column_type || difference.source_value.data_type
-          
-          // Use target column info to preserve other attributes (comment, default, etc.)
-          const targetInfo = typeof difference.target_value === 'object' ? difference.target_value : null
-          
-          if (targetInfo) {
-            // Build complete definition with source type but preserving target's other attributes
-            const colDef = buildColumnDefinition(targetInfo, sourceType)
+          // Source → Target: Make Target like Source (use ALL of Source's attributes)
+          const sourceInfo = typeof difference.source_value === 'object' ? difference.source_value : null
+
+          if (sourceInfo) {
+            const colDef = buildColumnDefinition(sourceInfo)
             return `-- Execute on TARGET database:\nALTER TABLE ${tableName} MODIFY COLUMN ${columnName} ${colDef};`
           }
-          
+
+          const sourceType = typeof difference.source_value === 'string'
+            ? difference.source_value
+            : difference.source_value.column_type || difference.source_value.data_type
           return `-- Execute on TARGET database:\nALTER TABLE ${tableName} MODIFY COLUMN ${columnName} ${sourceType};`
         }
         return `-- Unable to determine source column type`
         
       case DiffType.COLUMN_NULLABLE_CHANGED:
         if (difference.source_value !== undefined) {
-          // Get source nullable state
-          const sourceNullable = typeof difference.source_value === 'object' 
-            ? difference.source_value.is_nullable 
-            : difference.source_value
-          
-          // Use target column info to preserve other attributes (comment, default, etc.)
-          const targetInfo = typeof difference.target_value === 'object' ? difference.target_value : null
-          
-          if (targetInfo) {
-            // Build complete definition with source nullable but preserving target's other attributes
-            const colDef = buildColumnDefinition(targetInfo, undefined, sourceNullable)
+          // Source → Target: Make Target like Source (use ALL of Source's attributes)
+          const sourceInfo = typeof difference.source_value === 'object' ? difference.source_value : null
+
+          if (sourceInfo) {
+            const colDef = buildColumnDefinition(sourceInfo)
             return `-- Execute on TARGET database:\nALTER TABLE ${tableName} MODIFY COLUMN ${columnName} ${colDef};`
           }
-          
-          const columnType = typeof difference.target_value === 'object' 
-            ? difference.target_value.column_type 
+
+          const sourceNullable = typeof difference.source_value === 'object'
+            ? difference.source_value.is_nullable
+            : difference.source_value
+          const columnType = typeof difference.source_value === 'object'
+            ? difference.source_value.column_type
             : 'VARCHAR(255)'
           const nullable = sourceNullable ? 'NULL' : 'NOT NULL'
-          
+
           return `-- Execute on TARGET database:\nALTER TABLE ${tableName} MODIFY COLUMN ${columnName} ${columnType} ${nullable};`
         }
-        return `-- Unable to determine source nullable state`
+        return `-- Unable to determine source column info`
         
       case DiffType.COLUMN_DEFAULT_CHANGED:
         if (difference.source_value !== undefined) {
+          // Source → Target: Make Target like Source (use Source's attributes)
+          const sourceInfo = typeof difference.source_value === 'object' ? difference.source_value : null
+
+          if (sourceInfo) {
+            // Use full column definition with MODIFY COLUMN
+            const colDef = buildColumnDefinition(sourceInfo)
+            return `-- Execute on TARGET database:\nALTER TABLE ${tableName} MODIFY COLUMN ${columnName} ${colDef};`
+          }
+
+          // Fallback for primitive value
           if (difference.source_value === null) {
             return `-- Execute on TARGET database:\nALTER TABLE ${tableName} ALTER COLUMN ${columnName} DROP DEFAULT;`
           } else {
-            return `-- Execute on TARGET database:\nALTER TABLE ${tableName} ALTER COLUMN ${columnName} SET DEFAULT ${difference.source_value};`
+            const defaultVal = String(difference.source_value)
+            const quotedDefault = defaultVal.toUpperCase().startsWith('CURRENT_') || defaultVal.toUpperCase() === 'NULL'
+              ? defaultVal
+              : `'${defaultVal}'`
+            return `-- Execute on TARGET database:\nALTER TABLE ${tableName} ALTER COLUMN ${columnName} SET DEFAULT ${quotedDefault};`
           }
         }
         return `-- Unable to determine source default value`
@@ -759,37 +788,50 @@ export function DifferenceDetail({ difference }: DifferenceDetailProps) {
         return `-- Execute on TARGET database:\n-- Drop duplicate index\nDROP INDEX \`${difference.sub_object_name}\` ON ${tableName};`
         
       case DiffType.CONSTRAINT_MISSING_TARGET:
-        return `ALTER TABLE ${tableName} DROP CONSTRAINT ${columnName};`
-        
-      case DiffType.CONSTRAINT_MISSING_SOURCE:
+        // Constraint exists only in SOURCE, missing in TARGET
+        // Source → Target: ADD to TARGET (to match Source which has it)
         if (difference.source_value) {
           const const_data = difference.source_value
           const constraintType = const_data.constraint_type
-          
+
           if (constraintType === 'FOREIGN KEY') {
             const columns = const_data.columns || 'column_name'
             const refTable = `\`${const_data.referenced_table_schema}\`.\`${const_data.referenced_table_name}\``
             const refColumns = const_data.referenced_columns || 'ref_column'
             const updateRule = const_data.update_rule || 'RESTRICT'
             const deleteRule = const_data.delete_rule || 'RESTRICT'
-            return `ALTER TABLE ${tableName} ADD CONSTRAINT ${columnName} FOREIGN KEY (${columns}) REFERENCES ${refTable} (${refColumns}) ON UPDATE ${updateRule} ON DELETE ${deleteRule};`
+            return `-- Execute on TARGET database:\nALTER TABLE ${tableName} ADD CONSTRAINT ${columnName} FOREIGN KEY (${columns}) REFERENCES ${refTable} (${refColumns}) ON UPDATE ${updateRule} ON DELETE ${deleteRule};`
           } else if (constraintType === 'PRIMARY KEY') {
             const columns = const_data.columns || 'column_name'
-            return `ALTER TABLE ${tableName} ADD PRIMARY KEY (${columns});`
+            return `-- Execute on TARGET database:\nALTER TABLE ${tableName} ADD PRIMARY KEY (${columns});`
           } else if (constraintType === 'UNIQUE') {
             const columns = const_data.columns || 'column_name'
-            return `ALTER TABLE ${tableName} ADD CONSTRAINT ${columnName} UNIQUE (${columns});`
+            return `-- Execute on TARGET database:\nALTER TABLE ${tableName} ADD CONSTRAINT ${columnName} UNIQUE (${columns});`
           } else if (constraintType === 'CHECK') {
-            const columns = const_data.columns || 'column_name'
             const checkClause = const_data.check_clause || 'CHECK_CONDITION'
-            return `ALTER TABLE ${tableName} ADD CONSTRAINT ${columnName} CHECK (${checkClause});`
+            return `-- Execute on TARGET database:\nALTER TABLE ${tableName} ADD CONSTRAINT ${columnName} CHECK (${checkClause});`
           } else {
-            // Show available constraint info for unknown types
             const columns = const_data.columns || 'column_name'
-            return `ALTER TABLE ${tableName} ADD CONSTRAINT ${columnName} ${constraintType} (${columns});`
+            return `-- Execute on TARGET database:\nALTER TABLE ${tableName} ADD CONSTRAINT ${columnName} ${constraintType} (${columns});`
           }
         }
         return `-- Unable to generate constraint definition - missing constraint data`
+
+      case DiffType.CONSTRAINT_MISSING_SOURCE:
+        // Constraint exists only in TARGET, missing in SOURCE
+        // Source → Target: DROP from TARGET (to match Source which doesn't have it)
+        if (difference.target_value) {
+          const const_data = difference.target_value
+          const constraintType = const_data.constraint_type
+          if (constraintType === 'PRIMARY KEY') {
+            return `-- Execute on TARGET database:\nALTER TABLE ${tableName} DROP PRIMARY KEY;`
+          } else if (constraintType === 'FOREIGN KEY') {
+            return `-- Execute on TARGET database:\nALTER TABLE ${tableName} DROP FOREIGN KEY ${columnName};`
+          } else if (constraintType === 'UNIQUE') {
+            return `-- Execute on TARGET database:\nALTER TABLE ${tableName} DROP INDEX ${columnName};`
+          }
+        }
+        return `-- Execute on TARGET database:\nALTER TABLE ${tableName} DROP CONSTRAINT ${columnName};`
       
       case DiffType.CONSTRAINT_RENAMED:
         // Constraint renamed: Option 2 = Rename in Target to match Source
