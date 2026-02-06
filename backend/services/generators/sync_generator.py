@@ -647,14 +647,17 @@ ALTER TABLE {table_name} CHANGE COLUMN `{new_name}` `{old_name}` {rollback_defin
             default_val = col_info.get("column_default")
         
         if default_val is not None:
-            # Handle special cases
-            if str(default_val).upper() in ('CURRENT_TIMESTAMP', 'CURRENT_DATE', 'NULL'):
+            # Handle special cases (MySQL expressions that should not be quoted)
+            default_str = str(default_val)
+            default_upper = default_str.upper()
+            if default_upper in ('CURRENT_TIMESTAMP', 'CURRENT_DATE', 'NULL', 'TRUE', 'FALSE'):
                 default_clause = f" DEFAULT {default_val}"
-            elif str(default_val).upper().startswith('CURRENT_'):
+            elif default_upper.startswith('CURRENT_') or default_upper.startswith('NOW('):
                 default_clause = f" DEFAULT {default_val}"
             else:
-                # Quote string values
-                default_clause = f" DEFAULT '{default_val}'"
+                # Quote string values with proper escaping to prevent SQL injection
+                escaped_val = default_str.replace("\\", "\\\\").replace("'", "''")
+                default_clause = f" DEFAULT '{escaped_val}'"
         
         # Extra (AUTO_INCREMENT, ON UPDATE CURRENT_TIMESTAMP, etc.)
         extra_clause = ""

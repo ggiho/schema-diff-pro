@@ -15,6 +15,11 @@ interface DifferenceDetailProps {
   difference: Difference
 }
 
+// Escape string value for safe SQL interpolation
+const escapeSqlString = (value: string): string => {
+  return value.replace(/\\/g, '\\\\').replace(/'/g, "''")
+}
+
 export function DifferenceDetail({ difference }: DifferenceDetailProps) {
   const copyToClipboard = (text: string) => {
     navigator.clipboard.writeText(text)
@@ -58,7 +63,7 @@ export function DifferenceDetail({ difference }: DifferenceDetailProps) {
       if (defaultStr === 'CURRENT_TIMESTAMP' || defaultStr === 'CURRENT_DATE' || defaultStr === 'NULL' || defaultStr.startsWith('CURRENT_')) {
         defaultClause = ` DEFAULT ${defaultVal}`
       } else {
-        defaultClause = ` DEFAULT '${defaultVal}'`
+        defaultClause = ` DEFAULT '${escapeSqlString(String(defaultVal))}'`
       }
     }
 
@@ -283,7 +288,7 @@ export function DifferenceDetail({ difference }: DifferenceDetailProps) {
         const defaultVal = col.column_default
         // Quote string defaults, but not expressions like CURRENT_TIMESTAMP
         if (typeof defaultVal === 'string' && !defaultVal.toUpperCase().startsWith('CURRENT_') && defaultVal.toUpperCase() !== 'NULL') {
-          defaultClause = ` DEFAULT '${defaultVal}'`
+          defaultClause = ` DEFAULT '${escapeSqlString(String(defaultVal))}'`
         } else {
           defaultClause = ` DEFAULT ${defaultVal}`
         }
@@ -388,7 +393,15 @@ export function DifferenceDetail({ difference }: DifferenceDetailProps) {
           const columnType = col.column_type || col.data_type
           if (columnType) {
             const nullable = col.is_nullable !== undefined ? (col.is_nullable ? 'NULL' : 'NOT NULL') : ''
-            const defaultValue = col.column_default ? ` DEFAULT ${col.column_default}` : ''
+            let defaultValue = ''
+            if (col.column_default !== undefined && col.column_default !== null) {
+              const defVal = String(col.column_default).toUpperCase()
+              if (defVal === 'CURRENT_TIMESTAMP' || defVal === 'CURRENT_DATE' || defVal === 'NULL' || defVal.startsWith('CURRENT_')) {
+                defaultValue = ` DEFAULT ${col.column_default}`
+              } else {
+                defaultValue = ` DEFAULT '${escapeSqlString(String(col.column_default))}'`
+              }
+            }
             const extra = col.extra ? ` ${col.extra}` : ''
             return `-- Execute on SOURCE database:\nALTER TABLE ${tableName} ADD COLUMN ${columnName} ${columnType} ${nullable}${defaultValue}${extra};`
           }
@@ -654,7 +667,15 @@ export function DifferenceDetail({ difference }: DifferenceDetailProps) {
           const columnType = col.column_type || col.data_type
           if (columnType) {
             const nullable = col.is_nullable !== undefined ? (col.is_nullable ? 'NULL' : 'NOT NULL') : ''
-            const defaultValue = col.column_default ? ` DEFAULT ${col.column_default}` : ''
+            let defaultValue = ''
+            if (col.column_default !== undefined && col.column_default !== null) {
+              const defVal = String(col.column_default).toUpperCase()
+              if (defVal === 'CURRENT_TIMESTAMP' || defVal === 'CURRENT_DATE' || defVal === 'NULL' || defVal.startsWith('CURRENT_')) {
+                defaultValue = ` DEFAULT ${col.column_default}`
+              } else {
+                defaultValue = ` DEFAULT '${escapeSqlString(String(col.column_default))}'`
+              }
+            }
             const extra = col.extra ? ` ${col.extra}` : ''
             return `-- Execute on TARGET database:\nALTER TABLE ${tableName} ADD COLUMN ${columnName} ${columnType} ${nullable}${defaultValue}${extra};`
           }
