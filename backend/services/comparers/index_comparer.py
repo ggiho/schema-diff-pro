@@ -86,7 +86,27 @@ class IndexComparer(BaseComparer):
     def _create_table_key(self, index: Dict[str, Any]) -> str:
         """Create a table key for grouping indexes"""
         return f"{index['schema_name']}.{index['table_name']}"
-    
+
+    def create_missing_difference(
+        self,
+        obj_name: str,
+        obj_data: Any,
+        missing_in: str
+    ) -> Difference:
+        """Override to handle severity based on index uniqueness"""
+        diff = super().create_missing_difference(obj_name, obj_data, missing_in)
+
+        # Adjust severity based on uniqueness
+        # UNIQUE indexes: HIGH (data integrity)
+        # Non-unique indexes: MEDIUM (just performance)
+        is_unique = obj_data.get("is_unique", False)
+        if not is_unique:
+            diff.severity = SeverityLevel.MEDIUM
+        else:
+            diff.severity = SeverityLevel.HIGH
+
+        return diff
+
     async def compare(self) -> AsyncGenerator[ComparisonProgress, None]:
         """Override compare to detect renamed indexes"""
         # Discovery phase
@@ -283,7 +303,7 @@ class IndexComparer(BaseComparer):
                 
                 self.differences.append(Difference(
                     diff_type=DiffType.INDEX_RENAMED,
-                    severity=SeverityLevel.LOW,
+                    severity=SeverityLevel.MEDIUM,  # Index rename can affect app code
                     object_type=ObjectType.INDEX,
                     schema_name=source_idx['schema_name'],
                     object_name=source_idx['table_name'],

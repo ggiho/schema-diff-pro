@@ -374,7 +374,7 @@ class TableComparer(BaseComparer):
         for source_name, target_name, source_col, target_col in renamed_pairs:
             differences.append(Difference(
                 diff_type=DiffType.COLUMN_RENAMED,
-                severity=SeverityLevel.MEDIUM,
+                severity=SeverityLevel.HIGH,  # Can break app code
                 object_type=ObjectType.COLUMN,
                 schema_name=schema_name,
                 object_name=table_name,
@@ -419,9 +419,15 @@ class TableComparer(BaseComparer):
                 col_info["after_column"] = self._get_previous_column(
                     target_columns, col_info.get("ordinal_position", 0)
                 )
+
+                # Determine severity: MEDIUM if NOT NULL without default, otherwise LOW
+                is_nullable = col_info.get("is_nullable", True)
+                has_default = col_info.get("column_default") is not None
+                severity = SeverityLevel.MEDIUM if (not is_nullable and not has_default) else SeverityLevel.LOW
+
                 differences.append(Difference(
                     diff_type=DiffType.COLUMN_ADDED,
-                    severity=SeverityLevel.LOW,
+                    severity=severity,
                     object_type=ObjectType.COLUMN,
                     schema_name=schema_name,
                     object_name=table_name,
@@ -515,9 +521,10 @@ class TableComparer(BaseComparer):
         # Compare extra (auto_increment, etc.)
         if source_col["extra"] != target_col["extra"]:
             if not (self.options.ignore_auto_increment and "auto_increment" in source_col["extra"].lower()):
+                # Use INFO severity for extra changes that are likely just metadata
                 differences.append(Difference(
                     diff_type=DiffType.COLUMN_EXTRA_CHANGED,
-                    severity=SeverityLevel.MEDIUM,
+                    severity=SeverityLevel.INFO,
                     object_type=ObjectType.COLUMN,
                     schema_name=schema_name,
                     object_name=table_name,
@@ -536,7 +543,7 @@ class TableComparer(BaseComparer):
             if source_col["comment"] != target_col["comment"]:
                 differences.append(Difference(
                     diff_type=DiffType.COLUMN_EXTRA_CHANGED,
-                    severity=SeverityLevel.LOW,
+                    severity=SeverityLevel.INFO,  # Comment-only changes are informational
                     object_type=ObjectType.COLUMN,
                     schema_name=schema_name,
                     object_name=table_name,

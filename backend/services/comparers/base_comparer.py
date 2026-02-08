@@ -244,26 +244,36 @@ class BaseComparer(ABC):
             DiffType.COLUMN_REMOVED,
             DiffType.CONSTRAINT_MISSING_TARGET,
         ]
-        
+
         high_types = [
             DiffType.TABLE_MISSING_SOURCE,
             DiffType.COLUMN_TYPE_CHANGED,
             DiffType.COLUMN_NULLABLE_CHANGED,
-            DiffType.INDEX_MISSING_SOURCE,
-            DiffType.INDEX_MISSING_TARGET,
+            DiffType.COLUMN_RENAMED,  # Can break app code referencing old name
         ]
-        
+
         medium_types = [
             DiffType.COLUMN_DEFAULT_CHANGED,
+            DiffType.COLUMN_ADDED,  # May cause issues if NOT NULL without default
+            DiffType.INDEX_MISSING_SOURCE,
+            DiffType.INDEX_MISSING_TARGET,
             DiffType.INDEX_TYPE_CHANGED,
+            DiffType.INDEX_RENAMED,
+            DiffType.CONSTRAINT_RENAMED,  # FK name changes can affect app
             DiffType.VIEW_DEFINITION_CHANGED,
         ]
-        
+
+        info_types = [
+            DiffType.COLUMN_EXTRA_CHANGED,  # Often just comments
+        ]
+
         if diff_type in critical_types:
             return SeverityLevel.CRITICAL
         elif diff_type in high_types:
             return SeverityLevel.HIGH
         elif diff_type in medium_types:
             return SeverityLevel.MEDIUM
+        elif diff_type in info_types:
+            return SeverityLevel.INFO
         else:
             return SeverityLevel.LOW

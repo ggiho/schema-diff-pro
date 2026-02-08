@@ -300,7 +300,7 @@ class ConstraintComparer(BaseComparer):
                 
                 self.differences.append(Difference(
                     diff_type=DiffType.CONSTRAINT_RENAMED,
-                    severity=SeverityLevel.LOW,
+                    severity=SeverityLevel.MEDIUM,  # Can affect app code that references constraint by name
                     object_type=ObjectType.CONSTRAINT,
                     schema_name=source_const['schema_name'],
                     object_name=source_const['table_name'],
