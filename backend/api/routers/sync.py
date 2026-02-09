@@ -306,6 +306,7 @@ async def execute_sync_script(
             stmt_result = {
                 "index": i,
                 "statement": stmt[:100] + "..." if len(stmt) > 100 else stmt,
+                "full_statement": stmt,  # Keep full statement for debugging
                 "success": False,
                 "error": None,
                 "rows_affected": 0

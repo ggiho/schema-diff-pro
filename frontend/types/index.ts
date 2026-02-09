@@ -379,6 +379,7 @@ export interface ExecuteScriptRequest {
 export interface StatementResult {
   index: number
   statement: string
+  full_statement?: string  // Full statement text for debugging failed statements
   success: boolean
   error: string | null
   rows_affected: number

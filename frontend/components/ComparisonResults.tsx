@@ -128,9 +128,12 @@ export function ComparisonResults({ comparisonId, onNewComparison }: ComparisonR
       } else {
         toast.error(`Execution completed with ${execResult.failed_statements} failures`)
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error('Script execution error:', error)
-      toast.error('Failed to execute script')
+      const errorMessage = error?.response?.data?.detail
+        || error?.message
+        || 'Failed to execute script'
+      toast.error(`Execution failed: ${errorMessage}`)
     } finally {
       setExecuting(false)
     }
@@ -501,10 +504,12 @@ export function ComparisonResults({ comparisonId, onNewComparison }: ComparisonR
                               ) : (
                                 <XCircle className="h-3 w-3 text-red-500" />
                               )}
-                              <span className="truncate">{stmt.statement}</span>
+                              <span className={stmt.success ? "truncate" : "break-all"}>
+                                {stmt.success ? stmt.statement : (stmt.full_statement || stmt.statement)}
+                              </span>
                             </div>
                             {stmt.error && (
-                              <p className="mt-1 text-red-600 pl-5">{stmt.error}</p>
+                              <p className="mt-1 text-red-600 dark:text-red-400 pl-5 break-words">{stmt.error}</p>
                             )}
                           </div>
                         ))}
