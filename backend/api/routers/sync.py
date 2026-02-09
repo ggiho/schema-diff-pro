@@ -348,38 +348,104 @@ async def execute_sync_script(
 
 
 def parse_sql_statements(script: str) -> List[str]:
-    """Parse SQL script into individual statements"""
+    """Parse SQL script into individual statements.
+
+    Properly handles:
+    - Semicolons inside string literals: 'test; value'
+    - Comment markers inside strings: 'test--value'
+    - Escaped quotes: 'it''s working'
+    - Multi-line statements
+    """
     statements = []
+    current_stmt = []
+    in_string = False
+    string_char = None
+    i = 0
 
-    # Remove comments
-    lines = script.split('\n')
-    clean_lines = []
-    for line in lines:
-        # Skip comment-only lines
-        stripped = line.strip()
-        if stripped.startswith('--') or stripped.startswith('#'):
+    while i < len(script):
+        char = script[i]
+
+        # Handle string literals
+        if char in ("'", '"') and not in_string:
+            in_string = True
+            string_char = char
+            current_stmt.append(char)
+            i += 1
             continue
-        # Remove inline comments
-        if '--' in line:
-            line = line[:line.index('--')]
-        clean_lines.append(line)
 
-    clean_script = '\n'.join(clean_lines)
+        if in_string:
+            current_stmt.append(char)
+            # Check for escaped quote ('' or "")
+            if char == string_char:
+                # Look ahead for escaped quote
+                if i + 1 < len(script) and script[i + 1] == string_char:
+                    current_stmt.append(script[i + 1])
+                    i += 2
+                    continue
+                else:
+                    # End of string
+                    in_string = False
+                    string_char = None
+            i += 1
+            continue
 
-    # Split by semicolon
-    raw_statements = clean_script.split(';')
+        # Outside string - handle comments and semicolons
 
-    for stmt in raw_statements:
-        stmt = stmt.strip()
-        if stmt and not stmt.upper().startswith(('SET ', 'USE ')):
-            # Skip SET and USE statements for safety, but include DDL
-            if any(keyword in stmt.upper() for keyword in [
+        # Check for line comment (--)
+        if char == '-' and i + 1 < len(script) and script[i + 1] == '-':
+            # Skip until end of line
+            while i < len(script) and script[i] != '\n':
+                i += 1
+            continue
+
+        # Check for hash comment (#)
+        if char == '#':
+            # Skip until end of line
+            while i < len(script) and script[i] != '\n':
+                i += 1
+            continue
+
+        # Check for block comment (/* */)
+        if char == '/' and i + 1 < len(script) and script[i + 1] == '*':
+            i += 2
+            while i + 1 < len(script):
+                if script[i] == '*' and script[i + 1] == '/':
+                    i += 2
+                    break
+                i += 1
+            continue
+
+        # Statement terminator
+        if char == ';':
+            stmt = ''.join(current_stmt).strip()
+            if stmt:
+                # Only include DDL statements
+                stmt_upper = stmt.upper()
+                if not stmt_upper.startswith(('SET ', 'USE ')):
+                    if any(keyword in stmt_upper for keyword in [
+                        'CREATE', 'ALTER', 'DROP', 'ADD', 'MODIFY', 'CHANGE', 'RENAME'
+                    ]):
+                        statements.append(stmt)
+                        logger.info(f"Parsed statement: {stmt[:80]}...")
+                    else:
+                        logger.warning(f"Skipped statement (no DDL keyword): {stmt[:80]}...")
+            current_stmt = []
+            i += 1
+            continue
+
+        current_stmt.append(char)
+        i += 1
+
+    # Handle last statement without semicolon
+    stmt = ''.join(current_stmt).strip()
+    if stmt:
+        stmt_upper = stmt.upper()
+        if not stmt_upper.startswith(('SET ', 'USE ')):
+            if any(keyword in stmt_upper for keyword in [
                 'CREATE', 'ALTER', 'DROP', 'ADD', 'MODIFY', 'CHANGE', 'RENAME'
             ]):
                 statements.append(stmt)
                 logger.info(f"Parsed statement: {stmt[:80]}...")
-            else:
-                logger.warning(f"Skipped statement (no DDL keyword): {stmt[:80]}...")
 
     logger.info(f"Total parsed statements: {len(statements)}")
     return statements
