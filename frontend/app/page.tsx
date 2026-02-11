@@ -34,6 +34,21 @@ export default function HomePage() {
     setIsHydrated(true)
   }, [])
 
+  // Handle URL comparison parameter for rerun
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search)
+      const urlComparisonId = params.get('comparison')
+      if (urlComparisonId && urlComparisonId !== currentComparisonId) {
+        // New comparison from rerun - clear old result and start watching new comparison
+        setCurrentComparison(urlComparisonId, null)
+        setIsComparing(true)
+        // Clear URL parameter
+        window.history.replaceState({}, '', '/')
+      }
+    }
+  }, [currentComparisonId, setCurrentComparison])
+
   const handleStartComparison = async () => {
     if (!sourceConfig || !targetConfig) {
       toast.error('Please configure both source and target databases')
