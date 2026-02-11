@@ -1235,6 +1235,7 @@ ALTER TABLE {table_name} DROP CONSTRAINT `{old_name}`;
                         else:
                             part_defs.append(f"PARTITION `{pname}` VALUES LESS THAN ({desc})")
 
+                    partitions_sql = ',\n  '.join(part_defs)
                     forward = f"""-- Add partitioning to table (requires data reorganization)
 -- Table: {table_name}
 -- Method: {method}
@@ -1243,7 +1244,7 @@ ALTER TABLE {table_name} DROP CONSTRAINT `{old_name}`;
 -- Consider using pt-online-schema-change for large tables
 ALTER TABLE {table_name}
 PARTITION BY {method} ({expression}) (
-  {','.join(part_defs)}
+  {partitions_sql}
 );"""
                     rollback = f"""-- Remove partitioning from table
 ALTER TABLE {table_name} REMOVE PARTITIONING;"""
@@ -1306,10 +1307,11 @@ ALTER TABLE {table_name} REMOVE PARTITIONING;"""
                         else:
                             part_defs.append(f"PARTITION `{pname}` VALUES LESS THAN ({desc})")
 
+                    partitions_sql = ',\n  '.join(part_defs)
                     rollback = f"""-- Re-add partitioning to table
 ALTER TABLE {table_name}
 PARTITION BY {method} ({expression}) (
-  {','.join(part_defs)}
+  {partitions_sql}
 );"""
                 else:
                     rollback = f"-- TODO: Re-add partitioning to {table_name}"

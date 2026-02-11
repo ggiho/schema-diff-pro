@@ -650,11 +650,27 @@ export function DifferenceDetail({ difference }: DifferenceDetailProps) {
         // Option 1: Make Source like Target = ADD partition to Source
         if (difference.sub_object_name === '(all partitions)') {
           if (difference.target_value && typeof difference.target_value === 'object') {
-            const method = difference.target_value.partition_method || 'RANGE'
-            const expression = difference.target_value.partition_expression || 'column_name'
-            return `-- Execute on SOURCE database:\n-- Add partitioning to table\nALTER TABLE ${tableName}\nPARTITION BY ${method} (${expression}) (\n  -- Define partitions here\n);`
+            const partInfo = difference.target_value
+            const method = partInfo.partition_method || 'RANGE'
+            const expression = partInfo.partition_expression || ''
+            const partitions = partInfo.partitions || {}
+
+            if (Object.keys(partitions).length > 0) {
+              const partDefs = Object.entries(partitions)
+                .sort((a: any, b: any) => (a[1].ordinal_position || 0) - (b[1].ordinal_position || 0))
+                .map(([name, info]: [string, any]) => {
+                  const desc = info.description || ''
+                  if (method === 'LIST') {
+                    return `  PARTITION \`${name}\` VALUES IN ${desc}`
+                  } else {
+                    return `  PARTITION \`${name}\` VALUES LESS THAN (${desc})`
+                  }
+                })
+
+              return `-- Execute on SOURCE database:\n-- Add partitioning to table\nALTER TABLE ${tableName}\nPARTITION BY ${method} (${expression}) (\n${partDefs.join(',\n')}\n);`
+            }
           }
-          return `-- Execute on SOURCE database:\n-- Add partitioning to table\n-- ALTER TABLE ${tableName} PARTITION BY ... ;`
+          return `-- Execute on SOURCE database:\n-- Cannot generate partition SQL: missing partition info`
         }
         if (difference.target_value && typeof difference.target_value === 'object') {
           const partDesc = difference.target_value.description || 'VALUE'
@@ -951,11 +967,27 @@ export function DifferenceDetail({ difference }: DifferenceDetailProps) {
         // Option 2: Make Target like Source = ADD partition to Target
         if (difference.sub_object_name === '(all partitions)') {
           if (difference.source_value && typeof difference.source_value === 'object') {
-            const method = difference.source_value.partition_method || 'RANGE'
-            const expression = difference.source_value.partition_expression || 'column_name'
-            return `-- Execute on TARGET database:\n-- Add partitioning to table\nALTER TABLE ${tableName}\nPARTITION BY ${method} (${expression}) (\n  -- Define partitions here\n);`
+            const partInfo = difference.source_value
+            const method = partInfo.partition_method || 'RANGE'
+            const expression = partInfo.partition_expression || ''
+            const partitions = partInfo.partitions || {}
+
+            if (Object.keys(partitions).length > 0) {
+              const partDefs = Object.entries(partitions)
+                .sort((a: any, b: any) => (a[1].ordinal_position || 0) - (b[1].ordinal_position || 0))
+                .map(([name, info]: [string, any]) => {
+                  const desc = info.description || ''
+                  if (method === 'LIST') {
+                    return `  PARTITION \`${name}\` VALUES IN ${desc}`
+                  } else {
+                    return `  PARTITION \`${name}\` VALUES LESS THAN (${desc})`
+                  }
+                })
+
+              return `-- Execute on TARGET database:\n-- Add partitioning to table\nALTER TABLE ${tableName}\nPARTITION BY ${method} (${expression}) (\n${partDefs.join(',\n')}\n);`
+            }
           }
-          return `-- Execute on TARGET database:\n-- Add partitioning to table\n-- ALTER TABLE ${tableName} PARTITION BY ... ;`
+          return `-- Execute on TARGET database:\n-- Cannot generate partition SQL: missing partition info`
         }
         if (difference.source_value && typeof difference.source_value === 'object') {
           const partDesc = difference.source_value.description || 'VALUE'
