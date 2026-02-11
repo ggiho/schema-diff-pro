@@ -3,16 +3,18 @@
 import { useEffect, useState } from 'react'
 import { ComparisonProgress as ComparisonProgressType } from '@/types'
 import { Progress } from './ui/progress'
-import { Loader2 } from 'lucide-react'
+import { Button } from './ui/button'
+import { Loader2, ArrowLeft } from 'lucide-react'
 import { getComparisonStatus, getComparisonResult } from '@/lib/api'
 import { toast } from 'react-hot-toast'
 
 interface ComparisonProgressProps {
   comparisonId: string
   onComplete: (result?: any) => void
+  onBack: () => void
 }
 
-export function ComparisonProgress({ comparisonId, onComplete }: ComparisonProgressProps) {
+export function ComparisonProgress({ comparisonId, onComplete, onBack }: ComparisonProgressProps) {
   const [progress, setProgress] = useState<ComparisonProgressType | null>(null)
   const [status, setStatus] = useState<'running' | 'completed' | 'failed'>('running')
 
@@ -228,6 +230,14 @@ export function ComparisonProgress({ comparisonId, onComplete }: ComparisonProgr
             <p className="text-sm text-destructive">
               The comparison failed. Please check your database connections and try again.
             </p>
+            <Button
+              variant="outline"
+              onClick={onBack}
+              className="mt-4 gap-2"
+            >
+              <ArrowLeft className="h-4 w-4" />
+              Back to Setup
+            </Button>
           </div>
         )}
       </div>

@@ -73,6 +73,7 @@ export default function HomePage() {
   }
 
   const handleNewComparison = () => {
+    setIsComparing(false)
     clearComparison()
   }
 
@@ -153,6 +154,7 @@ export default function HomePage() {
           <ComparisonProgress
             comparisonId={currentComparisonId}
             onComplete={handleComparisonComplete}
+            onBack={handleNewComparison}
           />
         )}
 

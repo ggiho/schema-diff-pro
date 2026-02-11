@@ -74,13 +74,13 @@ async def start_comparison(
             if result:
                 # Store result
                 comparison_results[comparison_id] = result
-                
+
                 # Store connection configs for later script execution
                 comparison_connections[comparison_id] = {
                     "source": source_config,
                     "target": target_config
                 }
-                
+
                 # Add to history
                 history_manager.add_comparison(
                     comparison_id,
@@ -89,12 +89,16 @@ async def start_comparison(
                     len(result.differences),
                     result.summary
                 )
-                
-                # Send completion via WebSocket
-                await manager.send_complete(
-                    comparison_id,
-                    f"/api/v1/comparison/{comparison_id}/result"
-                )
+
+                # Check if result has errors (connection failures)
+                if result.errors:
+                    await manager.send_error(comparison_id, result.errors[0])
+                else:
+                    # Send completion via WebSocket
+                    await manager.send_complete(
+                        comparison_id,
+                        f"/api/v1/comparison/{comparison_id}/result"
+                    )
         
         except Exception as e:
             logger.error(f"Comparison failed: {str(e)}")
@@ -142,8 +146,15 @@ async def get_comparison_result(comparison_id: str) -> ComparisonResult:
 async def get_comparison_status(comparison_id: str) -> Dict[str, Any]:
     """Get comparison status"""
     if comparison_id in comparison_results:
+        result = comparison_results[comparison_id]
+        # Check if result has errors or connection failures
+        has_errors = (
+            result.errors or
+            result.summary.get("source_connection_failed", False) or
+            result.summary.get("target_connection_failed", False)
+        )
         return {
-            "status": "completed",
+            "status": "failed" if has_errors else "completed",
             "result_available": True
         }
     
@@ -237,7 +248,7 @@ async def rerun_comparison(comparison_id: str) -> Dict[str, str]:
                     "source": source_config,
                     "target": target_config
                 }
-                
+
                 history_manager.add_comparison(
                     comp_id,
                     source_config,
@@ -245,11 +256,15 @@ async def rerun_comparison(comparison_id: str) -> Dict[str, str]:
                     len(result.differences),
                     result.summary
                 )
-                
-                await manager.send_complete(
-                    comp_id,
-                    f"/api/v1/comparison/{comp_id}/result"
-                )
+
+                # Check if result has errors (connection failures)
+                if result.errors:
+                    await manager.send_error(comp_id, result.errors[0])
+                else:
+                    await manager.send_complete(
+                        comp_id,
+                        f"/api/v1/comparison/{comp_id}/result"
+                    )
         except Exception as e:
             logger.error(f"Comparison re-run failed: {str(e)}")
             from main import manager
