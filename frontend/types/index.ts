@@ -159,6 +159,9 @@ export enum DiffType {
   TRIGGER_MISSING_SOURCE = "trigger_missing_source",
   TRIGGER_MISSING_TARGET = "trigger_missing_target",
   TRIGGER_DEFINITION_CHANGED = "trigger_definition_changed",
+  PARTITION_MISSING_SOURCE = "partition_missing_source",
+  PARTITION_MISSING_TARGET = "partition_missing_target",
+  PARTITION_DEFINITION_CHANGED = "partition_definition_changed",
 }
 
 export enum SeverityLevel {

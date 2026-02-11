@@ -56,6 +56,11 @@ class DiffType(str, Enum):
     TRIGGER_MISSING_TARGET = "trigger_missing_target"
     TRIGGER_DEFINITION_CHANGED = "trigger_definition_changed"
 
+    # Partition level
+    PARTITION_MISSING_SOURCE = "partition_missing_source"
+    PARTITION_MISSING_TARGET = "partition_missing_target"
+    PARTITION_DEFINITION_CHANGED = "partition_definition_changed"
+
 
 class SeverityLevel(str, Enum):
     """Severity levels for differences"""

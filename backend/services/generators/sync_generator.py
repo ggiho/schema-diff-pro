@@ -27,6 +27,10 @@ REVERSE_DIFF_TYPE_MAP: Dict[DiffType, DiffType] = {
     DiffType.CONSTRAINT_MISSING_SOURCE: DiffType.CONSTRAINT_MISSING_TARGET,
     DiffType.CONSTRAINT_MISSING_TARGET: DiffType.CONSTRAINT_MISSING_SOURCE,
     DiffType.CONSTRAINT_RENAMED: DiffType.CONSTRAINT_RENAMED,  # Same in both directions, just swap names
+    # Partitions
+    DiffType.PARTITION_MISSING_SOURCE: DiffType.PARTITION_MISSING_TARGET,
+    DiffType.PARTITION_MISSING_TARGET: DiffType.PARTITION_MISSING_SOURCE,
+    DiffType.PARTITION_DEFINITION_CHANGED: DiffType.PARTITION_DEFINITION_CHANGED,
 }
 
 
@@ -294,6 +298,11 @@ class SyncScriptGenerator:
             DiffType.CONSTRAINT_MISSING_TARGET: self._gen_create_constraint,
             DiffType.CONSTRAINT_DEFINITION_CHANGED: self._gen_recreate_constraint,
             DiffType.CONSTRAINT_RENAMED: self._gen_rename_constraint,
+
+            # Partitions
+            DiffType.PARTITION_MISSING_SOURCE: self._gen_partition_missing_source,
+            DiffType.PARTITION_MISSING_TARGET: self._gen_partition_missing_target,
+            DiffType.PARTITION_DEFINITION_CHANGED: self._gen_partition_definition_changed,
         }
         
         generator = generators.get(diff.diff_type)
@@ -1202,7 +1211,182 @@ ALTER TABLE {table_name} DROP CONSTRAINT `{old_name}`;
         rollback = f"-- TODO: Reverse constraint rename"
         
         return forward, rollback
-    
+
+    # Partition generators
+    def _gen_partition_missing_target(self, diff: Difference) -> Tuple[str, str]:
+        """Generate SQL for partition missing in target (add partition)"""
+        table_name = f"`{diff.schema_name}`.`{diff.object_name}`"
+        part_name = diff.sub_object_name
+
+        # Handle case of all partitions missing (table not partitioned in target)
+        if part_name == "(all partitions)":
+            source_info = diff.source_value
+            if source_info and isinstance(source_info, dict):
+                method = source_info.get("partition_method", "RANGE")
+                expression = source_info.get("partition_expression", "")
+                partitions = source_info.get("partitions", {})
+
+                if partitions:
+                    part_defs = []
+                    for pname, pinfo in sorted(partitions.items(), key=lambda x: x[1].get("ordinal_position", 0)):
+                        desc = pinfo.get("description", "")
+                        if method == "LIST":
+                            part_defs.append(f"PARTITION `{pname}` VALUES IN {desc}")
+                        else:
+                            part_defs.append(f"PARTITION `{pname}` VALUES LESS THAN ({desc})")
+
+                    forward = f"""-- Add partitioning to table (requires data reorganization)
+-- Table: {table_name}
+-- Method: {method}
+-- Expression: {expression}
+-- WARNING: This requires recreating the table with partitions
+-- Consider using pt-online-schema-change for large tables
+ALTER TABLE {table_name}
+PARTITION BY {method} ({expression}) (
+  {','.join(part_defs)}
+);"""
+                    rollback = f"""-- Remove partitioning from table
+ALTER TABLE {table_name} REMOVE PARTITIONING;"""
+                    self.warnings.append(f"Adding partitions to {table_name} may require data reorganization")
+                    return forward, rollback
+
+            return f"-- Cannot add partitioning: insufficient information for {table_name}", ""
+
+        # Handle case of single partition missing
+        partition_info = diff.source_value
+        if not partition_info or not isinstance(partition_info, dict):
+            return f"-- Unable to generate ADD PARTITION for {part_name}", ""
+
+        part_desc = partition_info.get("description", "")
+
+        # Determine partition type from description
+        if "MAXVALUE" in str(part_desc).upper() or (part_desc and not str(part_desc).startswith("(")):
+            # RANGE partition: VALUES LESS THAN
+            forward = f"""-- Add partition to table
+-- Table: {table_name}
+-- Partition: {part_name}
+ALTER TABLE {table_name} ADD PARTITION (PARTITION `{part_name}` VALUES LESS THAN ({part_desc}));"""
+        else:
+            # LIST partition: VALUES IN
+            forward = f"""-- Add partition to table
+-- Table: {table_name}
+-- Partition: {part_name}
+ALTER TABLE {table_name} ADD PARTITION (PARTITION `{part_name}` VALUES IN {part_desc});"""
+
+        rollback = f"""-- Drop partition from table
+-- WARNING: This will DELETE all data in the partition!
+ALTER TABLE {table_name} DROP PARTITION `{part_name}`;"""
+
+        return forward, rollback
+
+    def _gen_partition_missing_source(self, diff: Difference) -> Tuple[str, str]:
+        """Generate SQL for partition missing in source (drop partition)"""
+        table_name = f"`{diff.schema_name}`.`{diff.object_name}`"
+        part_name = diff.sub_object_name
+
+        # Handle case of all partitions missing in source (table should not be partitioned)
+        if part_name == "(all partitions)":
+            forward = f"""-- Remove partitioning from table
+-- Table: {table_name}
+-- WARNING: This will merge all partition data into a single table
+ALTER TABLE {table_name} REMOVE PARTITIONING;"""
+
+            target_info = diff.target_value
+            if target_info and isinstance(target_info, dict):
+                method = target_info.get("partition_method", "RANGE")
+                expression = target_info.get("partition_expression", "")
+                partitions = target_info.get("partitions", {})
+
+                if partitions:
+                    part_defs = []
+                    for pname, pinfo in sorted(partitions.items(), key=lambda x: x[1].get("ordinal_position", 0)):
+                        desc = pinfo.get("description", "")
+                        if method == "LIST":
+                            part_defs.append(f"PARTITION `{pname}` VALUES IN {desc}")
+                        else:
+                            part_defs.append(f"PARTITION `{pname}` VALUES LESS THAN ({desc})")
+
+                    rollback = f"""-- Re-add partitioning to table
+ALTER TABLE {table_name}
+PARTITION BY {method} ({expression}) (
+  {','.join(part_defs)}
+);"""
+                else:
+                    rollback = f"-- TODO: Re-add partitioning to {table_name}"
+            else:
+                rollback = f"-- TODO: Re-add partitioning to {table_name}"
+
+            self.warnings.append(f"Removing partitions from {table_name} - ensure data is backed up!")
+            return forward, rollback
+
+        # Handle case of single partition to drop
+        partition_info = diff.target_value
+
+        forward = f"""-- Drop partition from table
+-- Table: {table_name}
+-- Partition: {part_name}
+-- WARNING: This will DELETE all data in the partition!
+ALTER TABLE {table_name} DROP PARTITION `{part_name}`;"""
+
+        # Rollback needs partition definition
+        if partition_info and isinstance(partition_info, dict):
+            part_desc = partition_info.get("description", "")
+            if "MAXVALUE" in str(part_desc).upper() or (part_desc and not str(part_desc).startswith("(")):
+                rollback = f"ALTER TABLE {table_name} ADD PARTITION (PARTITION `{part_name}` VALUES LESS THAN ({part_desc}));"
+            else:
+                rollback = f"ALTER TABLE {table_name} ADD PARTITION (PARTITION `{part_name}` VALUES IN {part_desc});"
+        else:
+            rollback = f"-- TODO: Recreate partition `{part_name}` with original definition"
+
+        self.warnings.append(f"Dropping partition {part_name} from {table_name} - data will be lost!")
+        return forward, rollback
+
+    def _gen_partition_definition_changed(self, diff: Difference) -> Tuple[str, str]:
+        """Generate SQL for partition definition change (requires REORGANIZE)"""
+        table_name = f"`{diff.schema_name}`.`{diff.object_name}`"
+        part_name = diff.sub_object_name
+
+        # Handle partition method or expression change
+        if part_name in ("partition_method", "partition_expression"):
+            forward = f"""-- Partition {part_name} changed
+-- Table: {table_name}
+-- From: {diff.target_value}
+-- To: {diff.source_value}
+-- WARNING: Changing {part_name} requires recreating the table
+-- This cannot be done with ALTER TABLE - requires export/import or pt-online-schema-change
+-- TODO: Implement table recreation with new partitioning scheme"""
+            rollback = f"-- Reverse the {part_name} change (requires table recreation)"
+            self.warnings.append(f"Changing {part_name} for {table_name} requires table rebuild")
+            return forward, rollback
+
+        # Handle individual partition value change
+        source_info = diff.source_value
+        target_info = diff.target_value
+
+        if source_info and isinstance(source_info, dict):
+            source_desc = source_info.get("description", "")
+            target_desc = target_info.get("description", "") if isinstance(target_info, dict) else ""
+
+            forward = f"""-- Partition definition changed. Manual REORGANIZE PARTITION required.
+-- Table: {table_name}
+-- Partition: {part_name}
+-- From: {target_desc}
+-- To: {source_desc}
+-- WARNING: REORGANIZE PARTITION may cause data movement
+-- ALTER TABLE {table_name} REORGANIZE PARTITION `{part_name}` INTO (
+--   PARTITION `{part_name}` VALUES LESS THAN ({source_desc})
+-- );"""
+            rollback = f"""-- Reverse the partition reorganization
+-- ALTER TABLE {table_name} REORGANIZE PARTITION `{part_name}` INTO (
+--   PARTITION `{part_name}` VALUES LESS THAN ({target_desc})
+-- );"""
+        else:
+            forward = f"-- Partition definition changed for {part_name}. Manual intervention required."
+            rollback = f"-- Reverse the partition change for {part_name}"
+
+        self.warnings.append(f"Partition {part_name} definition changed - requires REORGANIZE PARTITION")
+        return forward, rollback
+
     def _format_script(self, statements: List[str], title: str) -> str:
         """Format SQL script with header and sections"""
         direction_desc = (

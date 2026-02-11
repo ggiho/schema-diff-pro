@@ -237,6 +237,36 @@ export function DifferenceDetail({ difference }: DifferenceDetailProps) {
             <p className="text-sm font-mono">{value.collation}</p>
           </div>
         )}
+        {value.partition_method && (
+          <div>
+            <span className="text-xs font-medium text-muted-foreground">Partition Method:</span>
+            <p className="text-sm font-mono">{value.partition_method}</p>
+          </div>
+        )}
+        {value.partition_expression && (
+          <div>
+            <span className="text-xs font-medium text-muted-foreground">Partition Expression:</span>
+            <p className="text-sm font-mono">{value.partition_expression}</p>
+          </div>
+        )}
+        {value.partitions && Object.keys(value.partitions).length > 0 && (
+          <div>
+            <span className="text-xs font-medium text-muted-foreground">Partitions:</span>
+            <div className="mt-1 space-y-1">
+              {Object.entries(value.partitions).map(([pName, pInfo]: [string, any]) => (
+                <p key={pName} className="text-sm font-mono">
+                  {pName}: {pInfo.description || '(no description)'}
+                </p>
+              ))}
+            </div>
+          </div>
+        )}
+        {value.name && value.description && (
+          <div>
+            <span className="text-xs font-medium text-muted-foreground">Partition:</span>
+            <p className="text-sm font-mono">{value.name}: {value.description}</p>
+          </div>
+        )}
       </div>
     )
   }
@@ -602,11 +632,53 @@ export function DifferenceDetail({ difference }: DifferenceDetailProps) {
       case DiffType.TABLE_MISSING_TARGET:
         // Source Only: Option 1 = Delete from Source
         return `-- Execute on SOURCE database:\nDROP TABLE IF EXISTS ${tableName};`
-        
+
       case DiffType.TABLE_MISSING_SOURCE:
-        // Target Only: Option 1 = Add to Source  
+        // Target Only: Option 1 = Add to Source
         return generateCreateTableSQL(difference.target_value, tableName, 'SOURCE')
-        
+
+      case DiffType.PARTITION_MISSING_TARGET:
+        // Partition exists in Source, missing in Target
+        // Option 1: Make Source like Target = DROP partition from Source
+        if (difference.sub_object_name === '(all partitions)') {
+          return `-- Execute on SOURCE database:\n-- Remove partitioning from table\nALTER TABLE ${tableName} REMOVE PARTITIONING;`
+        }
+        return `-- Execute on SOURCE database:\n-- Drop partition to match target\nALTER TABLE ${tableName} DROP PARTITION \`${difference.sub_object_name}\`;`
+
+      case DiffType.PARTITION_MISSING_SOURCE:
+        // Partition exists in Target, missing in Source
+        // Option 1: Make Source like Target = ADD partition to Source
+        if (difference.sub_object_name === '(all partitions)') {
+          if (difference.target_value && typeof difference.target_value === 'object') {
+            const method = difference.target_value.partition_method || 'RANGE'
+            const expression = difference.target_value.partition_expression || 'column_name'
+            return `-- Execute on SOURCE database:\n-- Add partitioning to table\nALTER TABLE ${tableName}\nPARTITION BY ${method} (${expression}) (\n  -- Define partitions here\n);`
+          }
+          return `-- Execute on SOURCE database:\n-- Add partitioning to table\n-- ALTER TABLE ${tableName} PARTITION BY ... ;`
+        }
+        if (difference.target_value && typeof difference.target_value === 'object') {
+          const partDesc = difference.target_value.description || 'VALUE'
+          const isRange = !String(partDesc).startsWith('(')
+          if (isRange) {
+            return `-- Execute on SOURCE database:\n-- Add partition to match target\nALTER TABLE ${tableName} ADD PARTITION (PARTITION \`${difference.sub_object_name}\` VALUES LESS THAN (${partDesc}));`
+          } else {
+            return `-- Execute on SOURCE database:\n-- Add partition to match target\nALTER TABLE ${tableName} ADD PARTITION (PARTITION \`${difference.sub_object_name}\` VALUES IN ${partDesc});`
+          }
+        }
+        return `-- Execute on SOURCE database:\nALTER TABLE ${tableName} ADD PARTITION (PARTITION \`${difference.sub_object_name}\` VALUES LESS THAN (...));`
+
+      case DiffType.PARTITION_DEFINITION_CHANGED:
+        // Partition definition changed
+        // Option 1: Make Source like Target
+        if (difference.sub_object_name === 'partition_method' || difference.sub_object_name === 'partition_expression') {
+          return `-- Execute on SOURCE database:\n-- Changing ${difference.sub_object_name} requires table rebuild\n-- From: ${difference.source_value}\n-- To: ${difference.target_value}\n-- This requires exporting data and recreating the table`
+        }
+        if (difference.target_value && typeof difference.target_value === 'object') {
+          const targetDesc = difference.target_value.description || 'VALUE'
+          return `-- Execute on SOURCE database:\n-- Reorganize partition to match target\nALTER TABLE ${tableName} REORGANIZE PARTITION \`${difference.sub_object_name}\` INTO (\n  PARTITION \`${difference.sub_object_name}\` VALUES LESS THAN (${targetDesc})\n);`
+        }
+        return `-- Execute on SOURCE database:\n-- Reorganize partition\nALTER TABLE ${tableName} REORGANIZE PARTITION \`${difference.sub_object_name}\` INTO (...);`
+
       default:
         return `-- Forward SQL for ${difference.diff_type} will be generated in sync script`
     }
@@ -869,11 +941,53 @@ export function DifferenceDetail({ difference }: DifferenceDetailProps) {
       case DiffType.TABLE_MISSING_TARGET:
         // Source Only: Option 2 = Add to Target
         return generateCreateTableSQL(difference.source_value, tableName, 'TARGET')
-        
+
       case DiffType.TABLE_MISSING_SOURCE:
         // Target Only: Option 2 = Delete from Target
         return `-- Execute on TARGET database:\nDROP TABLE IF EXISTS ${tableName};`
-        
+
+      case DiffType.PARTITION_MISSING_TARGET:
+        // Partition exists in Source, missing in Target
+        // Option 2: Make Target like Source = ADD partition to Target
+        if (difference.sub_object_name === '(all partitions)') {
+          if (difference.source_value && typeof difference.source_value === 'object') {
+            const method = difference.source_value.partition_method || 'RANGE'
+            const expression = difference.source_value.partition_expression || 'column_name'
+            return `-- Execute on TARGET database:\n-- Add partitioning to table\nALTER TABLE ${tableName}\nPARTITION BY ${method} (${expression}) (\n  -- Define partitions here\n);`
+          }
+          return `-- Execute on TARGET database:\n-- Add partitioning to table\n-- ALTER TABLE ${tableName} PARTITION BY ... ;`
+        }
+        if (difference.source_value && typeof difference.source_value === 'object') {
+          const partDesc = difference.source_value.description || 'VALUE'
+          const isRange = !String(partDesc).startsWith('(')
+          if (isRange) {
+            return `-- Execute on TARGET database:\n-- Add partition to match source\nALTER TABLE ${tableName} ADD PARTITION (PARTITION \`${difference.sub_object_name}\` VALUES LESS THAN (${partDesc}));`
+          } else {
+            return `-- Execute on TARGET database:\n-- Add partition to match source\nALTER TABLE ${tableName} ADD PARTITION (PARTITION \`${difference.sub_object_name}\` VALUES IN ${partDesc});`
+          }
+        }
+        return `-- Execute on TARGET database:\nALTER TABLE ${tableName} ADD PARTITION (PARTITION \`${difference.sub_object_name}\` VALUES LESS THAN (...));`
+
+      case DiffType.PARTITION_MISSING_SOURCE:
+        // Partition exists in Target, missing in Source
+        // Option 2: Make Target like Source = DROP partition from Target
+        if (difference.sub_object_name === '(all partitions)') {
+          return `-- Execute on TARGET database:\n-- Remove partitioning from table\nALTER TABLE ${tableName} REMOVE PARTITIONING;`
+        }
+        return `-- Execute on TARGET database:\n-- Drop partition to match source\n-- WARNING: This will DELETE all data in the partition!\nALTER TABLE ${tableName} DROP PARTITION \`${difference.sub_object_name}\`;`
+
+      case DiffType.PARTITION_DEFINITION_CHANGED:
+        // Partition definition changed
+        // Option 2: Make Target like Source
+        if (difference.sub_object_name === 'partition_method' || difference.sub_object_name === 'partition_expression') {
+          return `-- Execute on TARGET database:\n-- Changing ${difference.sub_object_name} requires table rebuild\n-- From: ${difference.target_value}\n-- To: ${difference.source_value}\n-- This requires exporting data and recreating the table`
+        }
+        if (difference.source_value && typeof difference.source_value === 'object') {
+          const sourceDesc = difference.source_value.description || 'VALUE'
+          return `-- Execute on TARGET database:\n-- Reorganize partition to match source\nALTER TABLE ${tableName} REORGANIZE PARTITION \`${difference.sub_object_name}\` INTO (\n  PARTITION \`${difference.sub_object_name}\` VALUES LESS THAN (${sourceDesc})\n);`
+        }
+        return `-- Execute on TARGET database:\n-- Reorganize partition\nALTER TABLE ${tableName} REORGANIZE PARTITION \`${difference.sub_object_name}\` INTO (...);`
+
       default:
         return `-- Rollback SQL for ${difference.diff_type} will be generated in sync script`
     }

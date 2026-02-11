@@ -1,4 +1,4 @@
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, TYPE_CHECKING
 import logging
 from sqlalchemy import text
 
@@ -155,6 +155,18 @@ class TableComparer(BaseComparer):
                     continue
             
             logger.debug(f"Discovery complete: {len(tables)} tables with columns")
+
+            # Discover partitions
+            logger.debug("Discovering partitions...")
+            partitions = await self._discover_partitions(connection, tables)
+
+            # Attach partition info to tables
+            for table_key, partition_info in partitions.items():
+                if table_key in tables:
+                    tables[table_key]["partitions"] = partition_info
+
+            logger.debug(f"Found partitions for {len(partitions)} tables")
+
             return tables
             
         except Exception as e:
@@ -448,6 +460,14 @@ class TableComparer(BaseComparer):
             )
             differences.extend(col_diffs)
 
+        # Compare partitions
+        source_partitions = source_table.get("partitions")
+        target_partitions = target_table.get("partitions")
+        partition_diffs = self._compare_partitions(
+            schema_name, table_name, source_partitions, target_partitions
+        )
+        differences.extend(partition_diffs)
+
         return differences
     
     def _compare_column_properties(
@@ -671,3 +691,215 @@ class TableComparer(BaseComparer):
                 prev_pos = pos
 
         return prev_col
+
+    async def _discover_partitions(self, connection: DatabaseConnection, tables: Dict) -> Dict:
+        """Discover partition information for tables"""
+        query = text("""
+            SELECT
+                TABLE_SCHEMA,
+                TABLE_NAME,
+                PARTITION_NAME,
+                SUBPARTITION_NAME,
+                PARTITION_ORDINAL_POSITION,
+                SUBPARTITION_ORDINAL_POSITION,
+                PARTITION_METHOD,
+                SUBPARTITION_METHOD,
+                PARTITION_EXPRESSION,
+                SUBPARTITION_EXPRESSION,
+                PARTITION_DESCRIPTION,
+                PARTITION_COMMENT
+            FROM information_schema.PARTITIONS
+            WHERE TABLE_SCHEMA NOT IN :system_dbs
+                AND PARTITION_NAME IS NOT NULL
+            ORDER BY TABLE_SCHEMA, TABLE_NAME, PARTITION_ORDINAL_POSITION
+        """)
+
+        try:
+            results = await connection.execute_query(
+                query, {"system_dbs": tuple(settings.SYSTEM_DATABASES)}
+            )
+
+            partitions = {}
+            for row in results:
+                table_key = f"{row[0]}.{row[1]}"
+                if table_key not in tables:
+                    continue
+
+                if table_key not in partitions:
+                    partitions[table_key] = {
+                        "partition_method": row[6],
+                        "partition_expression": row[8],
+                        "subpartition_method": row[7],
+                        "subpartition_expression": row[9],
+                        "partitions": {}
+                    }
+
+                partition_name = row[2]
+                partitions[table_key]["partitions"][partition_name] = {
+                    "name": partition_name,
+                    "ordinal_position": row[4],
+                    "description": row[10],  # VALUES LESS THAN or VALUES IN
+                    "comment": row[11],
+                    "subpartition_name": row[3],
+                    "subpartition_ordinal_position": row[5]
+                }
+
+            return partitions
+        except Exception as e:
+            logger.warning(f"Failed to discover partitions: {e}")
+            return {}
+
+    def _compare_partitions(
+        self,
+        schema_name: str,
+        table_name: str,
+        source_partitions: Optional[Dict],
+        target_partitions: Optional[Dict]
+    ) -> List[Difference]:
+        """Compare partition definitions between source and target"""
+        differences = []
+
+        # Handle case where one side has partitions and other doesn't
+        if source_partitions and not target_partitions:
+            differences.append(Difference(
+                diff_type=DiffType.PARTITION_MISSING_TARGET,
+                severity=SeverityLevel.MEDIUM,
+                object_type=ObjectType.TABLE,
+                schema_name=schema_name,
+                object_name=table_name,
+                sub_object_name="(all partitions)",
+                source_value=source_partitions,
+                target_value=None,
+                description=f"Table {table_name} is partitioned in source but not in target",
+                can_auto_fix=False,  # Requires data migration
+                fix_order=50,
+                warnings=["Adding partitions to existing table may require data reorganization"]
+            ))
+            return differences
+
+        if target_partitions and not source_partitions:
+            differences.append(Difference(
+                diff_type=DiffType.PARTITION_MISSING_SOURCE,
+                severity=SeverityLevel.MEDIUM,
+                object_type=ObjectType.TABLE,
+                schema_name=schema_name,
+                object_name=table_name,
+                sub_object_name="(all partitions)",
+                source_value=None,
+                target_value=target_partitions,
+                description=f"Table {table_name} is partitioned in target but not in source",
+                can_auto_fix=False,
+                fix_order=50,
+                warnings=["Removing partitions requires data reorganization"]
+            ))
+            return differences
+
+        if not source_partitions and not target_partitions:
+            return differences
+
+        # Compare partition method
+        if source_partitions["partition_method"] != target_partitions["partition_method"]:
+            differences.append(Difference(
+                diff_type=DiffType.PARTITION_DEFINITION_CHANGED,
+                severity=SeverityLevel.HIGH,
+                object_type=ObjectType.TABLE,
+                schema_name=schema_name,
+                object_name=table_name,
+                sub_object_name="partition_method",
+                source_value=source_partitions["partition_method"],
+                target_value=target_partitions["partition_method"],
+                source_display_value=source_partitions["partition_method"],
+                target_display_value=target_partitions["partition_method"],
+                description=f"Partition method changed: {source_partitions['partition_method']} -> {target_partitions['partition_method']}",
+                can_auto_fix=False,
+                fix_order=50,
+                warnings=["Changing partition method requires table rebuild"]
+            ))
+
+        # Compare partition expression
+        if source_partitions.get("partition_expression") != target_partitions.get("partition_expression"):
+            differences.append(Difference(
+                diff_type=DiffType.PARTITION_DEFINITION_CHANGED,
+                severity=SeverityLevel.HIGH,
+                object_type=ObjectType.TABLE,
+                schema_name=schema_name,
+                object_name=table_name,
+                sub_object_name="partition_expression",
+                source_value=source_partitions.get("partition_expression"),
+                target_value=target_partitions.get("partition_expression"),
+                source_display_value=source_partitions.get("partition_expression") or "(none)",
+                target_display_value=target_partitions.get("partition_expression") or "(none)",
+                description=f"Partition expression changed",
+                can_auto_fix=False,
+                fix_order=50,
+                warnings=["Changing partition expression requires table rebuild"]
+            ))
+
+        # Compare individual partitions
+        source_parts = source_partitions.get("partitions", {})
+        target_parts = target_partitions.get("partitions", {})
+
+        # Partitions in source but not in target
+        for part_name, part_info in source_parts.items():
+            if part_name not in target_parts:
+                differences.append(Difference(
+                    diff_type=DiffType.PARTITION_MISSING_TARGET,
+                    severity=SeverityLevel.MEDIUM,
+                    object_type=ObjectType.TABLE,
+                    schema_name=schema_name,
+                    object_name=table_name,
+                    sub_object_name=part_name,
+                    source_value=part_info,
+                    target_value=None,
+                    source_display_value=f"{part_name}: {part_info.get('description', '')}",
+                    target_display_value="(does not exist)",
+                    description=f"Partition {part_name} exists in source but not in target",
+                    can_auto_fix=True,
+                    fix_order=60,
+                    warnings=[]
+                ))
+
+        # Partitions in target but not in source
+        for part_name, part_info in target_parts.items():
+            if part_name not in source_parts:
+                differences.append(Difference(
+                    diff_type=DiffType.PARTITION_MISSING_SOURCE,
+                    severity=SeverityLevel.LOW,
+                    object_type=ObjectType.TABLE,
+                    schema_name=schema_name,
+                    object_name=table_name,
+                    sub_object_name=part_name,
+                    source_value=None,
+                    target_value=part_info,
+                    source_display_value="(does not exist)",
+                    target_display_value=f"{part_name}: {part_info.get('description', '')}",
+                    description=f"Partition {part_name} exists in target but not in source",
+                    can_auto_fix=True,
+                    fix_order=60,
+                    warnings=[]
+                ))
+
+        # Compare partition definitions (VALUES)
+        for part_name in source_parts:
+            if part_name in target_parts:
+                source_desc = source_parts[part_name].get("description")
+                target_desc = target_parts[part_name].get("description")
+                if source_desc != target_desc:
+                    differences.append(Difference(
+                        diff_type=DiffType.PARTITION_DEFINITION_CHANGED,
+                        severity=SeverityLevel.MEDIUM,
+                        object_type=ObjectType.TABLE,
+                        schema_name=schema_name,
+                        object_name=table_name,
+                        sub_object_name=part_name,
+                        source_value={"name": part_name, "description": source_desc},
+                        target_value={"name": part_name, "description": target_desc},
+                        source_display_value=str(source_desc),
+                        target_display_value=str(target_desc),
+                        description=f"Partition {part_name} definition changed",
+                        can_auto_fix=False,
+                        fix_order=60,
+                        warnings=["Changing partition values requires REORGANIZE PARTITION"]
+                    ))
+
+        return differences
