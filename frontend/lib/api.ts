@@ -51,13 +51,23 @@ export async function getComparisonStatus(comparisonId: string): Promise<Compari
   return response.data
 }
 
+export interface SyncScriptFilters {
+  schemas?: string[]
+  object_types?: string[]
+  severities?: string[]
+}
+
 export async function generateSyncScript(
-  comparisonId: string, 
-  direction?: SyncDirection
+  comparisonId: string,
+  direction?: SyncDirection,
+  filters?: SyncScriptFilters
 ): Promise<SyncScript> {
   const response = await api.post<SyncScript>(
     `/sync/${comparisonId}/generate`,
-    direction ? { direction } : undefined
+    {
+      direction: direction || SyncDirection.SOURCE_TO_TARGET,
+      ...filters
+    }
   )
   return response.data
 }
