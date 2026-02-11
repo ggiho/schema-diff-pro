@@ -39,6 +39,7 @@ export const useComparisonStore = create<ComparisonStore>()(
         compare_views: false,
         compare_triggers: false,
         compare_events: false,
+        compare_partitions: false,
         ignore_auto_increment: true,
         ignore_comments: false,
         ignore_charset: false,

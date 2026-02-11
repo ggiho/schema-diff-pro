@@ -118,17 +118,18 @@ class ComparisonOptions(BaseModel):
     compare_views: bool = False
     compare_triggers: bool = False
     compare_events: bool = False
-    
+    compare_partitions: bool = False  # Disabled by default for performance
+
     included_schemas: Optional[List[str]] = None
     excluded_schemas: Optional[List[str]] = None
     included_tables: Optional[List[str]] = None
     excluded_tables: Optional[List[str]] = None
-    
+
     ignore_auto_increment: bool = True
     ignore_comments: bool = False
     ignore_charset: bool = False
     ignore_collation: bool = False
-    
+
     case_sensitive: bool = True
     
     

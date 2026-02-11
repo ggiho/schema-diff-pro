@@ -115,6 +115,7 @@ export interface ComparisonOptions {
   compare_views: boolean
   compare_triggers: boolean
   compare_events: boolean
+  compare_partitions: boolean
   included_schemas?: string[]
   excluded_schemas?: string[]
   included_tables?: string[]

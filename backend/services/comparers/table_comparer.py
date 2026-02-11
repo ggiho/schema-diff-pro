@@ -156,16 +156,20 @@ class TableComparer(BaseComparer):
             
             logger.debug(f"Discovery complete: {len(tables)} tables with columns")
 
-            # Discover partitions
-            logger.debug("Discovering partitions...")
-            partitions = await self._discover_partitions(connection, tables)
+            # Discover partitions (only if enabled - can be slow)
+            partitions = {}
+            if self.options.compare_partitions:
+                logger.debug("Discovering partitions...")
+                partitions = await self._discover_partitions(connection, tables)
 
-            # Attach partition info to tables
-            for table_key, partition_info in partitions.items():
-                if table_key in tables:
-                    tables[table_key]["partitions"] = partition_info
+                # Attach partition info to tables
+                for table_key, partition_info in partitions.items():
+                    if table_key in tables:
+                        tables[table_key]["partitions"] = partition_info
 
-            logger.debug(f"Found partitions for {len(partitions)} tables")
+                logger.debug(f"Found partitions for {len(partitions)} tables")
+            else:
+                logger.debug("Skipping partition discovery (disabled)")
 
             return tables
             
@@ -460,13 +464,14 @@ class TableComparer(BaseComparer):
             )
             differences.extend(col_diffs)
 
-        # Compare partitions
-        source_partitions = source_table.get("partitions")
-        target_partitions = target_table.get("partitions")
-        partition_diffs = self._compare_partitions(
-            schema_name, table_name, source_partitions, target_partitions
-        )
-        differences.extend(partition_diffs)
+        # Compare partitions (only if enabled)
+        if self.options.compare_partitions:
+            source_partitions = source_table.get("partitions")
+            target_partitions = target_table.get("partitions")
+            partition_diffs = self._compare_partitions(
+                schema_name, table_name, source_partitions, target_partitions
+            )
+            differences.extend(partition_diffs)
 
         return differences
     

@@ -28,12 +28,13 @@ export function ComparisonOptions({ options, onChange }: ComparisonOptionsProps)
               { key: 'compare_tables', label: 'Tables & Columns' },
               { key: 'compare_indexes', label: 'Indexes' },
               { key: 'compare_constraints', label: 'Constraints (PK, FK, Unique)' },
+              { key: 'compare_partitions', label: 'Partitions (can be slow)', warning: true },
               { key: 'compare_procedures', label: 'Stored Procedures' },
               { key: 'compare_functions', label: 'Functions' },
               { key: 'compare_views', label: 'Views' },
               { key: 'compare_triggers', label: 'Triggers' },
               { key: 'compare_events', label: 'Events' },
-            ].map(({ key, label }) => (
+            ].map(({ key, label, warning }) => (
               <label key={key} className="flex items-center gap-2">
                 <input
                   type="checkbox"
@@ -41,7 +42,7 @@ export function ComparisonOptions({ options, onChange }: ComparisonOptionsProps)
                   onChange={() => handleToggle(key as keyof ComparisonOptionsType)}
                   className="rounded border-gray-300"
                 />
-                <span className="text-sm">{label}</span>
+                <span className={`text-sm ${warning ? 'text-amber-600' : ''}`}>{label}</span>
               </label>
             ))}
           </div>
