@@ -8,16 +8,13 @@ import { DifferenceDetail } from './DifferenceDetail'
 
 interface DifferencesListProps {
   differences: Difference[]
-  onFiltersChange?: (filters: { schema: string; objectType: string; severity: string }) => void
-  initialFilters?: { schema: string; objectType: string; severity: string }
 }
 
-export function DifferencesList({ differences, onFiltersChange, initialFilters }: DifferencesListProps) {
+export function DifferencesList({ differences }: DifferencesListProps) {
   const [expandedItems, setExpandedItems] = useState<Set<number>>(new Set())
   const [filters, setFilters] = useState({
-    severity: initialFilters?.severity || '',
-    objectType: initialFilters?.objectType || '',
-    schema: initialFilters?.schema || '',
+    severity: '',
+    objectType: '',
     source: '',
     search: '',
   })
@@ -54,7 +51,6 @@ export function DifferencesList({ differences, onFiltersChange, initialFilters }
   const filteredDifferences = differences.filter((diff) => {
     if (filters.severity && diff.severity !== filters.severity) return false
     if (filters.objectType && diff.object_type !== filters.objectType) return false
-    if (filters.schema && diff.schema_name !== filters.schema) return false
     if (filters.source && getSourceType(diff) !== filters.source) return false
     if (filters.search) {
       const searchLower = filters.search.toLowerCase()
@@ -73,184 +69,74 @@ export function DifferencesList({ differences, onFiltersChange, initialFilters }
       return severityOrder.indexOf(a.toLowerCase()) - severityOrder.indexOf(b.toLowerCase())
     })
   const uniqueObjectTypes = Array.from(new Set(differences.map(d => d.object_type)))
-  const uniqueSchemas = Array.from(new Set(differences.map(d => d.schema_name).filter(Boolean)))
 
   return (
     <div className="space-y-4">
       {/* Filters */}
-      <div className="rounded-lg border border-border/40 bg-card/30 backdrop-blur-sm">
-        <div className="flex flex-wrap items-center gap-3 p-4">
-          <div className="flex items-center gap-2">
-            <Filter className="h-4 w-4 text-muted-foreground/70" />
-            <span className="text-sm font-medium text-foreground/80">Filter by</span>
-            {(filters.severity || filters.objectType || filters.schema || filters.source) && (
-              <div className="flex items-center gap-1.5 ml-1">
-                <div className="h-1.5 w-1.5 rounded-full bg-foreground/60 animate-pulse" />
-                <span className="text-xs font-medium text-foreground/60">
-                  {[filters.severity, filters.objectType, filters.schema, filters.source].filter(Boolean).length}
-                </span>
-              </div>
-            )}
-          </div>
-
-          <select
-            value={filters.severity}
-            onChange={(e) => {
-              const newFilters = { ...filters, severity: e.target.value }
-              setFilters(newFilters)
-              onFiltersChange?.({ schema: newFilters.schema, objectType: newFilters.objectType, severity: newFilters.severity })
-            }}
-            className="h-8 rounded-md border border-border/50 bg-background/80 px-3 text-sm text-foreground/90 shadow-sm transition-colors hover:border-border focus:border-foreground/30 focus:outline-none focus:ring-1 focus:ring-foreground/20"
-          >
-            <option value="">All Severities</option>
-            {uniqueSeverities.map((severity) => (
-              <option key={severity} value={severity}>
-                {severity.charAt(0).toUpperCase() + severity.slice(1)}
-              </option>
-            ))}
-          </select>
-
-          <select
-            value={filters.objectType}
-            onChange={(e) => {
-              const newFilters = { ...filters, objectType: e.target.value }
-              setFilters(newFilters)
-              onFiltersChange?.({ schema: newFilters.schema, objectType: newFilters.objectType, severity: newFilters.severity })
-            }}
-            className="h-8 rounded-md border border-border/50 bg-background/80 px-3 text-sm text-foreground/90 shadow-sm transition-colors hover:border-border focus:border-foreground/30 focus:outline-none focus:ring-1 focus:ring-foreground/20"
-          >
-            <option value="">All Object Types</option>
-            {uniqueObjectTypes.map((type) => (
-              <option key={type} value={type}>
-                {type.charAt(0).toUpperCase() + type.slice(1)}
-              </option>
-            ))}
-          </select>
-
-          <select
-            value={filters.schema}
-            onChange={(e) => {
-              const newFilters = { ...filters, schema: e.target.value }
-              setFilters(newFilters)
-              onFiltersChange?.({ schema: newFilters.schema, objectType: newFilters.objectType, severity: newFilters.severity })
-            }}
-            className="h-8 rounded-md border border-border/50 bg-background/80 px-3 text-sm text-foreground/90 shadow-sm transition-colors hover:border-border focus:border-foreground/30 focus:outline-none focus:ring-1 focus:ring-foreground/20"
-          >
-            <option value="">All Schemas</option>
-            {uniqueSchemas.map((schema) => (
-              <option key={schema} value={schema}>
-                {schema}
-              </option>
-            ))}
-          </select>
-
-          <select
-            value={filters.source}
-            onChange={(e) => setFilters({ ...filters, source: e.target.value })}
-            className="h-8 rounded-md border border-border/50 bg-background/80 px-3 text-sm text-foreground/90 shadow-sm transition-colors hover:border-border focus:border-foreground/30 focus:outline-none focus:ring-1 focus:ring-foreground/20"
-          >
-            <option value="">All Sources</option>
-            <option value="source-only">Source Only</option>
-            <option value="target-only">Target Only</option>
-            <option value="both">Different</option>
-          </select>
-
-          <input
-            type="text"
-            placeholder="Search differences..."
-            value={filters.search}
-            onChange={(e) => setFilters({ ...filters, search: e.target.value })}
-            className="h-8 min-w-[180px] rounded-md border border-border/50 bg-background/80 px-3 text-sm text-foreground/90 placeholder:text-muted-foreground/50 shadow-sm transition-colors hover:border-border focus:border-foreground/30 focus:outline-none focus:ring-1 focus:ring-foreground/20"
-          />
-
-          {(filters.severity || filters.objectType || filters.schema || filters.source) && (
-            <>
-              <div className="h-4 w-px bg-border/40" />
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => {
-                  setFilters({ severity: '', objectType: '', schema: '', source: '', search: '' })
-                  onFiltersChange?.({ schema: '', objectType: '', severity: '' })
-                }}
-                className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground"
-              >
-                Clear all
-              </Button>
-            </>
-          )}
+      <div className="flex flex-wrap gap-4 rounded-lg border bg-card p-4">
+        <div className="flex items-center gap-2">
+          <Filter className="h-4 w-4 text-muted-foreground" />
+          <span className="text-sm font-medium">Filters:</span>
         </div>
+        
+        <select
+          value={filters.severity}
+          onChange={(e) => setFilters({ ...filters, severity: e.target.value })}
+          className="rounded border bg-background px-3 py-1 text-sm"
+        >
+          <option value="">All Severities</option>
+          {uniqueSeverities.map((severity) => (
+            <option key={severity} value={severity}>
+              {severity.charAt(0).toUpperCase() + severity.slice(1)}
+            </option>
+          ))}
+        </select>
 
-        {/* Active filter tags */}
-        {(filters.schema || filters.objectType || filters.severity) && (
-          <div className="flex flex-wrap items-center gap-2 border-t border-border/30 bg-muted/20 px-4 py-2.5">
-            <span className="text-xs text-muted-foreground/70">Active:</span>
-            {filters.schema && (
-              <button
-                onClick={() => {
-                  const newFilters = { ...filters, schema: '' }
-                  setFilters(newFilters)
-                  onFiltersChange?.({ schema: '', objectType: newFilters.objectType, severity: newFilters.severity })
-                }}
-                className="group inline-flex items-center gap-1.5 rounded-md border border-border/40 bg-background/60 px-2.5 py-1 text-xs font-medium text-foreground/80 shadow-sm transition-all hover:border-border hover:bg-background hover:shadow"
-              >
-                <span className="text-muted-foreground/60">Schema:</span>
-                <span>{filters.schema}</span>
-                <span className="ml-0.5 text-muted-foreground/40 transition-colors group-hover:text-foreground/60">×</span>
-              </button>
-            )}
-            {filters.objectType && (
-              <button
-                onClick={() => {
-                  const newFilters = { ...filters, objectType: '' }
-                  setFilters(newFilters)
-                  onFiltersChange?.({ schema: newFilters.schema, objectType: '', severity: newFilters.severity })
-                }}
-                className="group inline-flex items-center gap-1.5 rounded-md border border-border/40 bg-background/60 px-2.5 py-1 text-xs font-medium text-foreground/80 shadow-sm transition-all hover:border-border hover:bg-background hover:shadow"
-              >
-                <span className="text-muted-foreground/60">Type:</span>
-                <span>{filters.objectType}</span>
-                <span className="ml-0.5 text-muted-foreground/40 transition-colors group-hover:text-foreground/60">×</span>
-              </button>
-            )}
-            {filters.severity && (
-              <button
-                onClick={() => {
-                  const newFilters = { ...filters, severity: '' }
-                  setFilters(newFilters)
-                  onFiltersChange?.({ schema: newFilters.schema, objectType: newFilters.objectType, severity: '' })
-                }}
-                className="group inline-flex items-center gap-1.5 rounded-md border border-border/40 bg-background/60 px-2.5 py-1 text-xs font-medium text-foreground/80 shadow-sm transition-all hover:border-border hover:bg-background hover:shadow"
-              >
-                <span className="text-muted-foreground/60">Severity:</span>
-                <span>{filters.severity}</span>
-                <span className="ml-0.5 text-muted-foreground/40 transition-colors group-hover:text-foreground/60">×</span>
-              </button>
-            )}
-          </div>
-        )}
+        <select
+          value={filters.objectType}
+          onChange={(e) => setFilters({ ...filters, objectType: e.target.value })}
+          className="rounded border bg-background px-3 py-1 text-sm"
+        >
+          <option value="">All Object Types</option>
+          {uniqueObjectTypes.map((type) => (
+            <option key={type} value={type}>
+              {type.charAt(0).toUpperCase() + type.slice(1)}
+            </option>
+          ))}
+        </select>
+
+        <select
+          value={filters.source}
+          onChange={(e) => setFilters({ ...filters, source: e.target.value })}
+          className="rounded border bg-background px-3 py-1 text-sm"
+        >
+          <option value="">All Sources</option>
+          <option value="source-only">Source Only</option>
+          <option value="target-only">Target Only</option>
+          <option value="both">Different</option>
+        </select>
+
+        <input
+          type="text"
+          placeholder="Search..."
+          value={filters.search}
+          onChange={(e) => setFilters({ ...filters, search: e.target.value })}
+          className="rounded border bg-background px-3 py-1 text-sm"
+        />
+
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => setFilters({ severity: '', objectType: '', source: '', search: '' })}
+        >
+          Clear
+        </Button>
       </div>
 
       {/* Results count */}
-      <div className={
-        filteredDifferences.length < differences.length
-          ? "flex items-center gap-2 rounded-md border border-border/40 bg-muted/30 px-3.5 py-2 text-sm font-medium text-foreground/80 backdrop-blur-sm"
-          : "text-sm text-muted-foreground/70"
-      }>
-        {filteredDifferences.length < differences.length ? (
-          <>
-            <div className="h-1.5 w-1.5 rounded-full bg-foreground/40" />
-            <span>
-              Showing <span className="font-semibold text-foreground">{filteredDifferences.length}</span>
-              <span className="text-muted-foreground/60"> of </span>
-              <span className="font-semibold text-foreground">{differences.length}</span>
-              <span className="text-muted-foreground/60"> results</span>
-            </span>
-          </>
-        ) : (
-          <span>Showing <span className="font-medium text-foreground/70">{filteredDifferences.length}</span> results</span>
-        )}
-      </div>
+      <p className="text-sm text-muted-foreground">
+        Showing {filteredDifferences.length} of {differences.length} differences
+      </p>
 
       {/* Differences list */}
       <div className="space-y-2">

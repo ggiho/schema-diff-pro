@@ -17,10 +17,6 @@ router = APIRouter()
 class SyncScriptRequest(BaseModel):
     """Request body for sync script generation"""
     direction: SyncDirection = SyncDirection.SOURCE_TO_TARGET
-    # Optional filters
-    schemas: Optional[List[str]] = None
-    object_types: Optional[List[str]] = None
-    severities: Optional[List[str]] = None
 
 
 @router.post("/{comparison_id}/generate")
@@ -45,31 +41,16 @@ async def generate_sync_script(
         raise HTTPException(status_code=404, detail="Comparison not found")
     
     result = comparison_results[comparison_id]
-
+    
     if not result.differences:
         raise HTTPException(status_code=400, detail="No differences found to sync")
-
+    
     # Use direction from request or default
     direction = request.direction if request else SyncDirection.SOURCE_TO_TARGET
-
-    # Start with all differences
-    differences = result.differences
-
-    # Apply filters if provided
-    if request:
-        if request.schemas:
-            differences = [d for d in differences if d.schema_name in request.schemas]
-        if request.object_types:
-            differences = [d for d in differences if d.object_type.value in request.object_types]
-        if request.severities:
-            differences = [d for d in differences if d.severity.value in request.severities]
-
-    if not differences:
-        raise HTTPException(status_code=400, detail="No differences found matching filters")
-
-    generator = SyncScriptGenerator(differences, comparison_id, direction)
+    
+    generator = SyncScriptGenerator(result.differences, comparison_id, direction)
     sync_script = generator.generate_sync_script()
-
+    
     return sync_script
 
 

@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import { ComparisonResult, SeverityLevel, SyncDirection, ScriptAnalysisResponse, ExecuteScriptResponse } from '@/types'
-import { getComparisonResult, generateSyncScript, analyzeScript, executeScript, rerunComparison, SyncScriptFilters } from '@/lib/api'
+import { getComparisonResult, generateSyncScript, analyzeScript, executeScript, rerunComparison } from '@/lib/api'
 import { Button } from './ui/button'
 import { DiffViewer } from './DiffViewer'
 import { SyncScriptViewer } from './SyncScriptViewer'
@@ -22,11 +22,6 @@ export function ComparisonResults({ comparisonId, onNewComparison }: ComparisonR
   const [activeTab, setActiveTab] = useState<'summary' | 'differences' | 'sync'>('summary')
   const [generatingScript, setGeneratingScript] = useState(false)
   const [syncDirection, setSyncDirection] = useState<SyncDirection>(SyncDirection.SOURCE_TO_TARGET)
-  const [currentFilters, setCurrentFilters] = useState<{
-    schema: string
-    objectType: string
-    severity: string
-  }>({ schema: '', objectType: '', severity: '' })
   
   // Cache scripts by direction to avoid regenerating
   const [scriptCache, setScriptCache] = useState<{
@@ -61,12 +56,8 @@ export function ComparisonResults({ comparisonId, onNewComparison }: ComparisonR
       return
     }
 
-    // Build cache key including filters
-    const filterKey = `${currentFilters.schema}-${currentFilters.objectType}-${currentFilters.severity}`
-    const cacheKey = `${direction}-${filterKey}`
-
     // Check cache first
-    if (scriptCache[cacheKey as keyof typeof scriptCache]) {
+    if (scriptCache[direction]) {
       setSyncDirection(direction)
       setActiveTab('sync')
       return
@@ -75,25 +66,15 @@ export function ComparisonResults({ comparisonId, onNewComparison }: ComparisonR
     setGeneratingScript(true)
     setSyncDirection(direction)
     try {
-      // Build filters from currentFilters
-      const filters: SyncScriptFilters = {}
-      if (currentFilters.schema) filters.schemas = [currentFilters.schema]
-      if (currentFilters.objectType) filters.object_types = [currentFilters.objectType]
-      if (currentFilters.severity) filters.severities = [currentFilters.severity]
-
-      const script = await generateSyncScript(
-        comparisonId,
-        direction,
-        Object.keys(filters).length > 0 ? filters : undefined
-      )
-      // Cache the generated script with filter key
+      const script = await generateSyncScript(comparisonId, direction)
+      // Cache the generated script
       setScriptCache(prev => ({
         ...prev,
-        [cacheKey]: script.forward_script
+        [direction]: script.forward_script
       }))
       setActiveTab('sync')
-      const directionText = direction === SyncDirection.SOURCE_TO_TARGET
-        ? 'Source → Target'
+      const directionText = direction === SyncDirection.SOURCE_TO_TARGET 
+        ? 'Source → Target' 
         : 'Target → Source'
       toast.success(`Sync script generated (${directionText})`)
     } catch (error) {
@@ -105,10 +86,8 @@ export function ComparisonResults({ comparisonId, onNewComparison }: ComparisonR
     }
   }
   
-  // Get current script from cache (with filter key)
-  const filterKey = `${currentFilters.schema}-${currentFilters.objectType}-${currentFilters.severity}`
-  const cacheKey = `${syncDirection}-${filterKey}`
-  const currentScript = scriptCache[cacheKey as keyof typeof scriptCache]
+  // Get current script from cache
+  const currentScript = scriptCache[syncDirection]
   
   // Get target database based on direction
   const getTargetDatabase = (): 'source' | 'target' => {
@@ -264,13 +243,7 @@ export function ComparisonResults({ comparisonId, onNewComparison }: ComparisonR
 
       <div className="min-h-[500px]">
         {activeTab === 'summary' && <ResultsSummary result={result} />}
-        {activeTab === 'differences' && (
-          <DifferencesList
-            differences={result.differences}
-            onFiltersChange={setCurrentFilters}
-            initialFilters={currentFilters}
-          />
-        )}
+        {activeTab === 'differences' && <DifferencesList differences={result.differences} />}
         {activeTab === 'sync' && (
           currentScript ? (
             <div className="space-y-4">
