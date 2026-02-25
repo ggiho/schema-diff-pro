@@ -900,25 +900,27 @@ CREATE INDEX `{index_name}` ON {table_name} ({idx_data});"""
         index_name = diff.sub_object_name  # Don't add backticks here
         
         # Add details about the index being dropped
-        if isinstance(diff.source_value, dict):
-            idx_data = diff.source_value
+        if isinstance(diff.target_value, dict):
+            idx_data = diff.target_value
             columns = idx_data.get("columns", "")
             idx_type = idx_data.get("index_type", "BTREE")
             unique = "UNIQUE" if idx_data.get("is_unique") else "Regular"
-            
+            idx_type_clause = f" USING {idx_type}" if idx_type != "BTREE" else ""
+
             forward = f"""-- Drop {unique} Index: {index_name}
 -- Table: {table_name}
 -- Columns: {columns}
 -- Type: {idx_type}
 DROP INDEX `{index_name}` ON {table_name};"""
+
+            unique_clause = "UNIQUE " if idx_data.get("is_unique") else ""
+            rollback = f"CREATE {unique_clause}INDEX `{index_name}` ON {table_name} ({columns}){idx_type_clause};"
         else:
             forward = f"""-- Drop Index: {index_name}
 -- Table: {table_name}
--- Original definition: {diff.source_value}
 DROP INDEX `{index_name}` ON {table_name};"""
-        
-        rollback = f"-- TODO: RECREATE INDEX `{index_name}` with original definition;"
-        
+            rollback = f"-- TODO: RECREATE INDEX `{index_name}` with original definition;"
+
         return forward, rollback
     
     def _gen_rename_index(self, diff: Difference) -> Tuple[str, str]:
@@ -947,7 +949,7 @@ DROP INDEX `{index_name}` ON {table_name};"""
         else:
             # Source DB should have target's name
             old_name = source_name
-            new_name = target_name
+            new_name = diff.source_value.get("index_name") if isinstance(diff.source_value, dict) else target_name
             comment = f"Rename index to match target: {old_name} → {new_name}"
         
         forward = f"""-- {comment}
@@ -966,36 +968,35 @@ ALTER TABLE {table_name} RENAME INDEX `{old_name}` TO `{new_name}`;"""
         # Drop and recreate
         drop_stmt = f"DROP INDEX `{index_name}` ON {table_name};"
         
-        if diff.target_value:
-            if isinstance(diff.target_value, dict):
-                idx_data = diff.target_value
-                unique = "UNIQUE" if idx_data.get("is_unique") else ""
+        if diff.source_value:
+            if isinstance(diff.source_value, dict):
+                idx_data = diff.source_value
+                unique = "UNIQUE " if idx_data.get("is_unique") else ""
                 columns = idx_data.get("columns", "")
                 idx_type = idx_data.get("index_type", "BTREE")
-                idx_type_clause = f"USING {idx_type}" if idx_type != "BTREE" else ""
-                
+                idx_type_clause = f" USING {idx_type}" if idx_type != "BTREE" else ""
+
                 create_stmt = f"""-- Recreate Index: {index_name}
 -- Table: {table_name}
 -- Columns: {columns}
 -- Type: {idx_type}
-CREATE {unique} INDEX `{index_name}` ON {table_name} ({columns}) {idx_type_clause};""".strip()
+CREATE {unique}INDEX `{index_name}` ON {table_name} ({columns}){idx_type_clause};""".strip()
             else:
-                # If it's a string, create a basic index
-                create_stmt = f"CREATE INDEX `{index_name}` ON {table_name} ({diff.target_value});"
-            
+                create_stmt = f"CREATE INDEX `{index_name}` ON {table_name} ({diff.source_value});"
+
             forward = f"{drop_stmt}\n\n{create_stmt}"
-            
+
             # Rollback would recreate with original definition
-            if diff.source_value and isinstance(diff.source_value, dict):
-                src_data = diff.source_value
-                unique = "UNIQUE" if src_data.get("is_unique") else ""
-                columns = src_data.get("columns", "")
-                idx_type = src_data.get("index_type", "BTREE")
-                idx_type_clause = f"USING {idx_type}" if idx_type != "BTREE" else ""
-                rollback = f"DROP INDEX `{index_name}` ON {table_name};\nCREATE {unique} INDEX `{index_name}` ON {table_name} ({columns}) {idx_type_clause};".strip()
+            if diff.target_value and isinstance(diff.target_value, dict):
+                tgt_data = diff.target_value
+                unique = "UNIQUE " if tgt_data.get("is_unique") else ""
+                columns = tgt_data.get("columns", "")
+                idx_type = tgt_data.get("index_type", "BTREE")
+                idx_type_clause = f" USING {idx_type}" if idx_type != "BTREE" else ""
+                rollback = f"DROP INDEX `{index_name}` ON {table_name};\nCREATE {unique}INDEX `{index_name}` ON {table_name} ({columns}){idx_type_clause};".strip()
             else:
                 rollback = f"-- TODO: RECREATE INDEX `{index_name}` WITH ORIGINAL DEFINITION;"
-            
+
             return forward, rollback
         
         return None, None
@@ -1080,19 +1081,19 @@ ALTER TABLE {table_name} ADD CONSTRAINT {constraint_name} UNIQUE ({columns});"""
         constraint_name = f"`{diff.sub_object_name}`"
         
         # Generate appropriate drop statement based on constraint type
-        if isinstance(diff.source_value, dict):
-            const_type = diff.source_value.get("constraint_type", "")
+        if isinstance(diff.target_value, dict):
+            const_type = diff.target_value.get("constraint_type", "")
             if const_type == "PRIMARY KEY":
                 forward = f"-- Drop Primary Key\nALTER TABLE {table_name} DROP PRIMARY KEY;"
                 rollback = f"-- TODO: RECREATE PRIMARY KEY with original definition"
             elif const_type == "FOREIGN KEY":
-                columns = diff.source_value.get("columns", "")
-                ref_table = diff.source_value.get("referenced_table_name", "")
-                ref_columns = diff.source_value.get("referenced_columns", "")
+                columns = diff.target_value.get("columns", "")
+                ref_table = diff.target_value.get("referenced_table_name", "")
+                ref_columns = diff.target_value.get("referenced_columns", "")
                 forward = f"-- Drop Foreign Key: {constraint_name} ({columns}) -> {ref_table}({ref_columns})\nALTER TABLE {table_name} DROP FOREIGN KEY {constraint_name};"
                 rollback = f"-- TODO: RECREATE FOREIGN KEY {constraint_name}"
             elif const_type == "UNIQUE":
-                columns = diff.source_value.get("columns", "")
+                columns = diff.target_value.get("columns", "")
                 forward = f"-- Drop Unique Constraint: {constraint_name} ({columns})\nALTER TABLE {table_name} DROP INDEX {constraint_name};"
                 rollback = f"-- TODO: RECREATE UNIQUE CONSTRAINT {constraint_name}"
             else:
@@ -1100,7 +1101,7 @@ ALTER TABLE {table_name} ADD CONSTRAINT {constraint_name} UNIQUE ({columns});"""
                 rollback = f"-- TODO: RECREATE CONSTRAINT {constraint_name};"
         else:
             # Fallback for string format
-            forward = f"-- Drop constraint: {constraint_name}\n-- Original definition: {diff.source_value}\nALTER TABLE {table_name} DROP CONSTRAINT {constraint_name};"
+            forward = f"-- Drop constraint: {constraint_name}\n-- Original definition: {diff.target_value}\nALTER TABLE {table_name} DROP CONSTRAINT {constraint_name};"
             rollback = f"-- TODO: RECREATE CONSTRAINT {constraint_name};"
         
         return forward, rollback
@@ -1129,7 +1130,7 @@ ALTER TABLE {table_name} ADD CONSTRAINT {constraint_name} UNIQUE ({columns});"""
                     object_name=diff.object_name,
                     sub_object_name=diff.sub_object_name,
                     source_value=None,
-                    target_value=diff.source_value,  # Use source as target for rollback
+                    target_value=diff.target_value,  # Use original target definition for rollback
                     description=diff.description
                 )
                 rollback_create, _ = self._gen_create_constraint(original_diff)
@@ -1167,7 +1168,7 @@ ALTER TABLE {table_name} ADD CONSTRAINT {constraint_name} UNIQUE ({columns});"""
             new_name = source_name
         else:
             old_name = source_name
-            new_name = target_name
+            new_name = diff.source_value.get("constraint_name") if isinstance(diff.source_value, dict) else target_name
         
         # UNIQUE constraints are actually indexes in MySQL
         if constraint_type == "UNIQUE":
