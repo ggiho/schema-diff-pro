@@ -6,6 +6,7 @@ __pycache__/
 .Python
 env/
 venv/
+.venv/
 ENV/
 env.bak/
 venv.bak/
@@ -36,6 +37,7 @@ node_modules/
 # Project specific
 *.pid
 backend/venv/
+backend/.venv/
 frontend/.next/
 frontend/out/
 backend/backend.log

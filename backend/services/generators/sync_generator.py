@@ -329,28 +329,28 @@ class SyncScriptGenerator:
         
         if property_name == "engine":
             forward = f"""-- Modify Table Engine: {table_name}
--- From: {source_value}
--- To: {target_value}
-ALTER TABLE {table_name} ENGINE={target_value};"""
-            rollback = f"ALTER TABLE {table_name} ENGINE={source_value};"
-            
+-- From: {target_value}
+-- To: {source_value}
+ALTER TABLE {table_name} ENGINE={source_value};"""
+            rollback = f"ALTER TABLE {table_name} ENGINE={target_value};"
+
         elif property_name == "comment":
             # Escape single quotes in comments
-            escaped_target = str(target_value or "").replace("'", "''")
-            escaped_source = str(source_value or "").replace("'", "''")
-            
+            escaped_old = str(target_value or "").replace("'", "''")
+            escaped_new = str(source_value or "").replace("'", "''")
+
             forward = f"""-- Modify Table Comment: {table_name}
--- From: {source_value or '(none)'}
--- To: {target_value or '(none)'}
-ALTER TABLE {table_name} COMMENT='{escaped_target}';"""
-            rollback = f"ALTER TABLE {table_name} COMMENT='{escaped_source}';"
-            
+-- From: {target_value or '(none)'}
+-- To: {source_value or '(none)'}
+ALTER TABLE {table_name} COMMENT='{escaped_new}';"""
+            rollback = f"ALTER TABLE {table_name} COMMENT='{escaped_old}';"
+
         elif property_name == "collation":
             forward = f"""-- Modify Table Collation: {table_name}
--- From: {source_value}
--- To: {target_value}
-ALTER TABLE {table_name} COLLATE={target_value};"""
-            rollback = f"ALTER TABLE {table_name} COLLATE={source_value};"
+-- From: {target_value}
+-- To: {source_value}
+ALTER TABLE {table_name} COLLATE={source_value};"""
+            rollback = f"ALTER TABLE {table_name} COLLATE={target_value};"
             
         else:
             # Unknown property

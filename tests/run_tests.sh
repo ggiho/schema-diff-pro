@@ -16,21 +16,15 @@ fi
 echo "🌐 API Base URL: $API_BASE_URL"
 echo ""
 
-# Install test dependencies if not present
-if ! command -v pytest &> /dev/null; then
-    echo "📦 Installing pytest..."
-    pip install pytest pytest-asyncio aiohttp
-fi
-
 echo "🔧 Running Unit Tests..."
 echo "========================"
 cd "$(dirname "$0")"
-python -m pytest test_environment.py -v
+uv run --project ../backend pytest test_environment.py -v
 
 echo ""
 echo "🌐 Running Integration Tests..."
 echo "==============================="
-python test_integration.py
+uv run --project ../backend python test_integration.py
 
 echo ""
 echo "✅ All tests completed!"

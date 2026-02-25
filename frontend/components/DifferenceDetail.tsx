@@ -422,18 +422,8 @@ export function DifferenceDetail({ difference }: DifferenceDetailProps) {
           const col = difference.target_value
           const columnType = col.column_type || col.data_type
           if (columnType) {
-            const nullable = col.is_nullable !== undefined ? (col.is_nullable ? 'NULL' : 'NOT NULL') : ''
-            let defaultValue = ''
-            if (col.column_default !== undefined && col.column_default !== null) {
-              const defVal = String(col.column_default).toUpperCase()
-              if (defVal === 'CURRENT_TIMESTAMP' || defVal === 'CURRENT_DATE' || defVal === 'NULL' || defVal.startsWith('CURRENT_')) {
-                defaultValue = ` DEFAULT ${col.column_default}`
-              } else {
-                defaultValue = ` DEFAULT '${escapeSqlString(String(col.column_default))}'`
-              }
-            }
-            const extra = col.extra ? ` ${col.extra}` : ''
-            return `-- Execute on SOURCE database:\nALTER TABLE ${tableName} ADD COLUMN ${columnName} ${columnType} ${nullable}${defaultValue}${extra};`
+            const colDef = buildColumnDefinition(col)
+            return `-- Execute on SOURCE database:\nALTER TABLE ${tableName} ADD COLUMN ${columnName} ${colDef};`
           }
         }
         return `-- Execute on SOURCE database:\nALTER TABLE ${tableName} ADD COLUMN ${columnName} VARCHAR(255) NULL;`
@@ -630,7 +620,21 @@ export function DifferenceDetail({ difference }: DifferenceDetailProps) {
         return `-- Execute on SOURCE database:\nALTER TABLE ${tableName} RENAME INDEX \`${difference.sub_object_name}\` TO \`new_name\`;`
         
       case DiffType.TABLE_MISSING_TARGET:
-        // Source Only: Option 1 = Delete from Source
+        // Source Only: Option 1 = Delete from Source (or property change if sub_object_name is set)
+        if (difference.sub_object_name) {
+          // Table property changed: make Source like Target (apply target_value to SOURCE)
+          const prop = difference.sub_object_name
+          const propName = prop.charAt(0).toUpperCase() + prop.slice(1)
+          const header = `-- Execute on SOURCE database:\n-- Modify Table ${propName}: ${tableName}\n-- From: ${difference.source_value} \u2192 To: ${difference.target_value}\n`
+          if (prop === 'comment') {
+            return `${header}ALTER TABLE ${tableName} COMMENT='${escapeSqlString(String(difference.target_value ?? ''))}';`
+          } else if (prop === 'engine') {
+            return `${header}ALTER TABLE ${tableName} ENGINE=${difference.target_value};`
+          } else if (prop === 'collation') {
+            return `${header}ALTER TABLE ${tableName} COLLATE=${difference.target_value};`
+          }
+          return `${header}-- ALTER TABLE ${tableName} /* modify ${prop} */;`
+        }
         return `-- Execute on SOURCE database:\nDROP TABLE IF EXISTS ${tableName};`
 
       case DiffType.TABLE_MISSING_SOURCE:
@@ -754,18 +758,8 @@ export function DifferenceDetail({ difference }: DifferenceDetailProps) {
           const col = difference.source_value
           const columnType = col.column_type || col.data_type
           if (columnType) {
-            const nullable = col.is_nullable !== undefined ? (col.is_nullable ? 'NULL' : 'NOT NULL') : ''
-            let defaultValue = ''
-            if (col.column_default !== undefined && col.column_default !== null) {
-              const defVal = String(col.column_default).toUpperCase()
-              if (defVal === 'CURRENT_TIMESTAMP' || defVal === 'CURRENT_DATE' || defVal === 'NULL' || defVal.startsWith('CURRENT_')) {
-                defaultValue = ` DEFAULT ${col.column_default}`
-              } else {
-                defaultValue = ` DEFAULT '${escapeSqlString(String(col.column_default))}'`
-              }
-            }
-            const extra = col.extra ? ` ${col.extra}` : ''
-            return `-- Execute on TARGET database:\nALTER TABLE ${tableName} ADD COLUMN ${columnName} ${columnType} ${nullable}${defaultValue}${extra};`
+            const colDef = buildColumnDefinition(col)
+            return `-- Execute on TARGET database:\nALTER TABLE ${tableName} ADD COLUMN ${columnName} ${colDef};`
           }
         }
         return `-- Execute on TARGET database:\nALTER TABLE ${tableName} ADD COLUMN ${columnName} VARCHAR(255) NULL;`
@@ -955,7 +949,21 @@ export function DifferenceDetail({ difference }: DifferenceDetailProps) {
         return `-- Execute on TARGET database:\nALTER TABLE ${tableName} RENAME INDEX \`old_name\` TO \`${difference.sub_object_name}\`;`
         
       case DiffType.TABLE_MISSING_TARGET:
-        // Source Only: Option 2 = Add to Target
+        // Source Only: Option 2 = Add to Target (or property change if sub_object_name is set)
+        if (difference.sub_object_name) {
+          // Table property changed: make Target like Source (apply source_value to TARGET)
+          const prop = difference.sub_object_name
+          const propName = prop.charAt(0).toUpperCase() + prop.slice(1)
+          const header = `-- Execute on TARGET database:\n-- Modify Table ${propName}: ${tableName}\n-- From: ${difference.target_value} \u2192 To: ${difference.source_value}\n`
+          if (prop === 'comment') {
+            return `${header}ALTER TABLE ${tableName} COMMENT='${escapeSqlString(String(difference.source_value ?? ''))}';`
+          } else if (prop === 'engine') {
+            return `${header}ALTER TABLE ${tableName} ENGINE=${difference.source_value};`
+          } else if (prop === 'collation') {
+            return `${header}ALTER TABLE ${tableName} COLLATE=${difference.source_value};`
+          }
+          return `${header}-- ALTER TABLE ${tableName} /* modify ${prop} */;`
+        }
         return generateCreateTableSQL(difference.source_value, tableName, 'TARGET')
 
       case DiffType.TABLE_MISSING_SOURCE:

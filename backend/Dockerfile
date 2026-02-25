@@ -7,9 +7,14 @@ RUN apt-get update && apt-get install -y \
     gcc \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements first for better caching
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Install uv
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+
+# Copy dependency files first for better caching
+COPY pyproject.toml uv.lock .python-version ./
+
+# Install production dependencies
+RUN uv sync --no-dev --frozen
 
 # Copy application code
 COPY . .
@@ -22,4 +27,4 @@ USER appuser
 EXPOSE 8000
 
 # Run the application
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uv", "run", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]

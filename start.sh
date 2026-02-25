@@ -6,15 +6,11 @@ echo ""
 # Backend
 echo "🔧 Starting backend server..."
 cd backend
-if [ ! -d "venv" ]; then
-    python3 -m venv venv
-fi
-source venv/bin/activate
-pip install -r requirements.txt -q
+uv sync --no-dev -q
 if [ ! -f ".env" ]; then
     cp .env.example .env
 fi
-nohup python3 -m uvicorn main:app --reload --host 0.0.0.0 --port 8000 > backend.log 2>&1 &
+nohup uv run uvicorn main:app --host 0.0.0.0 --port 8000 > backend.log 2>&1 &
 BACKEND_PID=$!
 cd ..
 

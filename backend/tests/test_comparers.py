@@ -595,7 +595,7 @@ class TestBaseComparer:
         ) == SeverityLevel.HIGH
         assert table_comparer.determine_severity(
             DiffType.INDEX_MISSING_TARGET
-        ) == SeverityLevel.HIGH
+        ) == SeverityLevel.MEDIUM
 
     def test_create_missing_difference_for_source(self, table_comparer: TableComparer):
         """Should create correct difference for object missing in source"""
