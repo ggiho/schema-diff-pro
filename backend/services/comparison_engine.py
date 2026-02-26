@@ -498,7 +498,13 @@ class ComparisonEngine:
         """Remove sub-diffs for tables that are entirely missing.
 
         When TABLE_MISSING_TARGET or TABLE_MISSING_SOURCE (without sub_object_name)
-        is present, all column/index/constraint diffs for that table are redundant.
+        is present, only filter diffs that are already covered by CREATE TABLE:
+        - COLUMN diffs (columns are generated inside CREATE TABLE)
+        - PRIMARY KEY constraint (included in CREATE TABLE)
+
+        Keep these because they need separate SQL statements:
+        - INDEX diffs (CREATE INDEX must be run after CREATE TABLE)
+        - Non-PK CONSTRAINT diffs (FK, UNIQUE need ALTER TABLE after CREATE TABLE)
         """
         from models.base import DiffType, ObjectType
 
@@ -519,10 +525,20 @@ class ComparisonEngine:
             if diff.object_type == ObjectType.TABLE:
                 filtered.append(diff)
                 continue
-            # Skip sub-diffs for entirely missing tables
+
             table_key = f"{diff.schema_name}.{diff.object_name}"
             if table_key in missing_tables:
-                continue
+                # Filter column diffs — covered by CREATE TABLE
+                if diff.object_type == ObjectType.COLUMN:
+                    continue
+                # Filter PRIMARY KEY constraint — included in CREATE TABLE
+                if diff.object_type == ObjectType.CONSTRAINT:
+                    const_data = diff.source_value or diff.target_value
+                    if isinstance(const_data, dict) and const_data.get("constraint_type") == "PRIMARY KEY":
+                        continue
+                # Keep index diffs (need CREATE INDEX after CREATE TABLE)
+                # Keep FK/UNIQUE constraint diffs (need ALTER TABLE after CREATE TABLE)
+
             filtered.append(diff)
 
         removed = len(differences) - len(filtered)
