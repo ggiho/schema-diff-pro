@@ -255,7 +255,7 @@ export function DifferenceDetail({ difference }: DifferenceDetailProps) {
             <div className="mt-1 space-y-1">
               {Object.entries(value.partitions).map(([pName, pInfo]: [string, any]) => (
                 <p key={pName} className="text-sm font-mono">
-                  {pName}: {pInfo.description || '(no description)'}
+                  {pName}: {pInfo ? (pInfo.description || '(no description)') : '(no info)'}
                 </p>
               ))}
             </div>
