@@ -215,38 +215,53 @@ class SyncScriptGenerator:
                 # TABLE_MISSING_TARGET = Target에 없음 = Target에 CREATE
                 if diff.diff_type == DiffType.TABLE_MISSING_SOURCE:
                     tables_to_drop.add(table_key)
-                elif diff.diff_type == DiffType.TABLE_MISSING_TARGET:
+                elif diff.diff_type == DiffType.TABLE_MISSING_TARGET and not diff.sub_object_name:
                     tables_to_create.add(table_key)
-        
-        if not tables_to_drop:
+
+        if not tables_to_drop and not tables_to_create:
             return differences
-        
+
         # Log filtered tables
         logger.info(f"Tables to be dropped: {tables_to_drop}")
-        
+
         # Filter out redundant changes
         filtered = []
         skipped_count = 0
-        
+
         for diff in differences:
             table_key = f"{diff.schema_name}.{diff.object_name}"
-            
+
             # Keep table-level changes
             if diff.object_type == ObjectType.TABLE:
                 filtered.append(diff)
                 continue
-            
+
             # Skip changes for tables that will be dropped
             if table_key in tables_to_drop:
                 skipped_count += 1
                 logger.debug(f"Skipping {diff.diff_type} for {table_key}.{diff.sub_object_name} (table will be dropped)")
                 continue
-            
+
+            # Skip redundant changes for tables being created
+            if table_key in tables_to_create:
+                # Columns are already included in CREATE TABLE
+                if diff.diff_type == DiffType.COLUMN_ADDED:
+                    skipped_count += 1
+                    logger.debug(f"Skipping COLUMN_ADDED for {table_key}.{diff.sub_object_name} (already in CREATE TABLE)")
+                    continue
+                # PRIMARY KEY is already included in CREATE TABLE
+                if diff.diff_type == DiffType.CONSTRAINT_MISSING_TARGET:
+                    const_data = diff.source_value or diff.target_value
+                    if isinstance(const_data, dict) and const_data.get("constraint_type") == "PRIMARY KEY":
+                        skipped_count += 1
+                        logger.debug(f"Skipping PRIMARY KEY for {table_key} (already in CREATE TABLE)")
+                        continue
+
             filtered.append(diff)
-        
+
         if skipped_count > 0:
-            self.warnings.append(f"Skipped {skipped_count} changes for tables that will be dropped")
-            logger.info(f"Filtered out {skipped_count} redundant changes for tables being dropped")
+            self.warnings.append(f"Skipped {skipped_count} changes for tables that will be dropped or created")
+            logger.info(f"Filtered out {skipped_count} redundant changes for tables being dropped or created")
         
         return filtered
     
