@@ -448,8 +448,11 @@ class ComparisonEngine:
                 message="Analyzing differences and generating summary"
             )
             
+            # Filter out redundant sub-diffs for entirely missing tables
+            all_differences = self._filter_redundant_diffs(all_differences)
+
             summary = self._generate_summary(all_differences)
-            
+
             # Sort differences by fix order and severity
             all_differences.sort(
                 key=lambda d: (d.fix_order, d.severity.value, d.object_name)
@@ -491,6 +494,43 @@ class ComparisonEngine:
             await source_conn.close()
             await target_conn.close()
     
+    def _filter_redundant_diffs(self, differences: List[Difference]) -> List[Difference]:
+        """Remove sub-diffs for tables that are entirely missing.
+
+        When TABLE_MISSING_TARGET or TABLE_MISSING_SOURCE (without sub_object_name)
+        is present, all column/index/constraint diffs for that table are redundant.
+        """
+        from models.base import DiffType, ObjectType
+
+        # Find tables that are entirely missing (not property changes)
+        missing_tables: set = set()
+        for diff in differences:
+            if (diff.object_type == ObjectType.TABLE
+                    and not diff.sub_object_name
+                    and diff.diff_type in (DiffType.TABLE_MISSING_TARGET, DiffType.TABLE_MISSING_SOURCE)):
+                missing_tables.add(f"{diff.schema_name}.{diff.object_name}")
+
+        if not missing_tables:
+            return differences
+
+        filtered = []
+        for diff in differences:
+            # Keep table-level diffs
+            if diff.object_type == ObjectType.TABLE:
+                filtered.append(diff)
+                continue
+            # Skip sub-diffs for entirely missing tables
+            table_key = f"{diff.schema_name}.{diff.object_name}"
+            if table_key in missing_tables:
+                continue
+            filtered.append(diff)
+
+        removed = len(differences) - len(filtered)
+        if removed:
+            logger.info(f"Filtered out {removed} redundant diffs for entirely missing tables: {missing_tables}")
+
+        return filtered
+
     def _generate_summary(self, differences: List[Difference]) -> Dict[str, Any]:
         """Generate summary statistics from differences"""
         summary = {
