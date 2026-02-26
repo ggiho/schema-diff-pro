@@ -237,30 +237,44 @@ export function DifferenceDetail({ difference }: DifferenceDetailProps) {
             <p className="text-sm font-mono">{value.collation}</p>
           </div>
         )}
-        {value.partition_method && (
-          <div>
-            <span className="text-xs font-medium text-muted-foreground">Partition Method:</span>
-            <p className="text-sm font-mono">{value.partition_method}</p>
-          </div>
-        )}
-        {value.partition_expression && (
-          <div>
-            <span className="text-xs font-medium text-muted-foreground">Partition Expression:</span>
-            <p className="text-sm font-mono">{value.partition_expression}</p>
-          </div>
-        )}
-        {value.partitions && Object.keys(value.partitions).length > 0 && (
-          <div>
-            <span className="text-xs font-medium text-muted-foreground">Partitions:</span>
-            <div className="mt-1 space-y-1">
-              {Object.entries(value.partitions).map(([pName, pInfo]: [string, any]) => (
-                <p key={pName} className="text-sm font-mono">
-                  {pName}: {pInfo ? (pInfo.description || '(no description)') : '(no info)'}
-                </p>
-              ))}
-            </div>
-          </div>
-        )}
+        {(() => {
+          // TABLE_MISSING_* diffs: partition info is nested under value.partitions
+          // PARTITION_* diffs: partition info is at the top level of value
+          const isNestedPartitionInfo = value.partitions && typeof value.partitions === 'object' && 'partition_method' in value.partitions
+          const partMethod = isNestedPartitionInfo ? value.partitions.partition_method : value.partition_method
+          const partExpression = isNestedPartitionInfo ? value.partitions.partition_expression : value.partition_expression
+          const individualPartitions: Record<string, any> = isNestedPartitionInfo
+            ? (value.partitions.partitions || {})
+            : (value.partitions || {})
+          return (
+            <>
+              {partMethod && (
+                <div>
+                  <span className="text-xs font-medium text-muted-foreground">Partition Method:</span>
+                  <p className="text-sm font-mono">{partMethod}</p>
+                </div>
+              )}
+              {partExpression && (
+                <div>
+                  <span className="text-xs font-medium text-muted-foreground">Partition Expression:</span>
+                  <p className="text-sm font-mono">{partExpression}</p>
+                </div>
+              )}
+              {Object.keys(individualPartitions).length > 0 && (
+                <div>
+                  <span className="text-xs font-medium text-muted-foreground">Partitions:</span>
+                  <div className="mt-1 space-y-1">
+                    {Object.entries(individualPartitions).map(([pName, pInfo]: [string, any]) => (
+                      <p key={pName} className="text-sm font-mono">
+                        {pName}: {pInfo ? (pInfo.description || '(no description)') : '(no info)'}
+                      </p>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </>
+          )
+        })()}
         {value.name && value.description && (
           <div>
             <span className="text-xs font-medium text-muted-foreground">Partition:</span>
@@ -296,6 +310,8 @@ export function DifferenceDetail({ difference }: DifferenceDetailProps) {
       return `-- Execute on ${targetDb} database:\nCREATE TABLE ${tableName} (\n  -- Column information not available\n) ENGINE=${engine}${collation ? ` COLLATE=${collation}` : ''};`
     }
 
+    const tableComment = tableData.comment || ''
+
     // Sort columns by ordinal_position
     const sortedColumns = Object.entries(columns).sort((a: any, b: any) => {
       const posA = a[1]?.ordinal_position || 0
@@ -308,30 +324,8 @@ export function DifferenceDetail({ difference }: DifferenceDetailProps) {
 
     for (const [colName, colInfo] of sortedColumns) {
       if (typeof colInfo !== 'object') continue
-
       const col = colInfo as any
-      const colType = col.column_type || col.data_type || 'VARCHAR(255)'
-      const nullable = col.is_nullable ? 'NULL' : 'NOT NULL'
-      
-      let defaultClause = ''
-      if (col.column_default !== null && col.column_default !== undefined) {
-        const defaultVal = col.column_default
-        // Quote string defaults, but not expressions like CURRENT_TIMESTAMP
-        if (typeof defaultVal === 'string' && !defaultVal.toUpperCase().startsWith('CURRENT_') && defaultVal.toUpperCase() !== 'NULL') {
-          defaultClause = ` DEFAULT '${escapeSqlString(String(defaultVal))}'`
-        } else {
-          defaultClause = ` DEFAULT ${defaultVal}`
-        }
-      }
-
-      let extra = ''
-      if (col.extra && col.extra.toLowerCase().includes('auto_increment')) {
-        extra = ' AUTO_INCREMENT'
-      }
-
-      colDefs.push(`\`${colName}\` ${colType} ${nullable}${defaultClause}${extra}`)
-
-      // Track primary keys
+      colDefs.push(`\`${colName}\` ${buildColumnDefinition(col)}`)
       if (col.column_key === 'PRI') {
         primaryKeys.push(`\`${colName}\``)
       }
@@ -344,8 +338,32 @@ export function DifferenceDetail({ difference }: DifferenceDetailProps) {
 
     const engineClause = engine ? ` ENGINE=${engine}` : ''
     const collationClause = collation ? ` COLLATE=${collation}` : ''
+    const commentClause = tableComment ? ` COMMENT='${tableComment.replace(/'/g, "''")}'` : ''
 
-    return `-- Execute on ${targetDb} database:\nCREATE TABLE ${tableName} (\n  ${colDefs.join(',\n  ')}\n)${engineClause}${collationClause};`
+    // Build PARTITION BY clause if table is partitioned
+    let partitionClause = ''
+    const partitionInfo = tableData.partitions
+    if (partitionInfo && typeof partitionInfo === 'object' && partitionInfo.partition_method) {
+      const method = partitionInfo.partition_method || 'RANGE'
+      const expression = partitionInfo.partition_expression || ''
+      const parts: Record<string, any> = partitionInfo.partitions || {}
+      const partDefs = Object.entries(parts)
+        .sort((a: any, b: any) => (a[1]?.ordinal_position || 0) - (b[1]?.ordinal_position || 0))
+        .map(([pName, pInfo]: [string, any]) => {
+          if (!pInfo) return null
+          const desc = pInfo.description || ''
+          return method === 'LIST'
+            ? `  PARTITION \`${pName}\` VALUES IN ${desc}`
+            : `  PARTITION \`${pName}\` VALUES LESS THAN (${desc})`
+        })
+        .filter(Boolean)
+      if (partDefs.length > 0) {
+        const exprClause = expression ? ` (${expression})` : ''
+        partitionClause = `\nPARTITION BY ${method}${exprClause} (\n${partDefs.join(',\n')}\n)`
+      }
+    }
+
+    return `-- Execute on ${targetDb} database:\nCREATE TABLE ${tableName} (\n  ${colDefs.join(',\n  ')}\n)${engineClause}${collationClause}${commentClause}${partitionClause};`
   }
 
   const getDiffTypeIcon = () => {

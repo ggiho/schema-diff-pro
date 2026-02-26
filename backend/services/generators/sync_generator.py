@@ -463,9 +463,11 @@ ALTER TABLE {table_name} COLLATE={source_value};"""
                         method = partition_info.get("partition_method", "RANGE")
                         expression = partition_info.get("partition_expression", "")
                         parts = partition_info.get("partitions", {})
-                        if method and expression and parts:
+                        if method and parts:
                             part_defs = []
-                            for pname, pinfo in sorted(parts.items(), key=lambda x: x[1].get("ordinal_position", 0)):
+                            for pname, pinfo in sorted(parts.items(), key=lambda x: x[1].get("ordinal_position", 0) if x[1] else 0):
+                                if not pinfo:
+                                    continue
                                 desc = pinfo.get("description", "")
                                 if method == "LIST":
                                     part_defs.append(f"PARTITION `{pname}` VALUES IN {desc}")
@@ -473,7 +475,8 @@ ALTER TABLE {table_name} COLLATE={source_value};"""
                                     part_defs.append(f"PARTITION `{pname}` VALUES LESS THAN ({desc})")
                             if part_defs:
                                 partitions_sql = ',\n  '.join(part_defs)
-                                partition_clause = f"\nPARTITION BY {method} ({expression}) (\n  {partitions_sql}\n)"
+                                expr_clause = f" ({expression})" if expression else ""
+                                partition_clause = f"\nPARTITION BY {method}{expr_clause} (\n  {partitions_sql}\n)"
 
                     forward = f"CREATE TABLE {table_name} (\n  " + ",\n  ".join(col_defs) + f"\n){engine_clause}{collation_clause}{comment_clause}{partition_clause};"
                     rollback = f"DROP TABLE IF EXISTS {table_name};"
