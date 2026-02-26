@@ -456,7 +456,26 @@ ALTER TABLE {table_name} COLLATE={source_value};"""
                         escaped_comment = str(comment).replace("'", "''")
                         comment_clause = f" COMMENT='{escaped_comment}'"
                     
-                    forward = f"CREATE TABLE {table_name} (\n  " + ",\n  ".join(col_defs) + f"\n){engine_clause}{collation_clause}{comment_clause};"
+                    # Build partition clause if table is partitioned
+                    partition_clause = ""
+                    partition_info = table_data.get("partitions")
+                    if partition_info and isinstance(partition_info, dict):
+                        method = partition_info.get("partition_method", "RANGE")
+                        expression = partition_info.get("partition_expression", "")
+                        parts = partition_info.get("partitions", {})
+                        if method and expression and parts:
+                            part_defs = []
+                            for pname, pinfo in sorted(parts.items(), key=lambda x: x[1].get("ordinal_position", 0)):
+                                desc = pinfo.get("description", "")
+                                if method == "LIST":
+                                    part_defs.append(f"PARTITION `{pname}` VALUES IN {desc}")
+                                else:
+                                    part_defs.append(f"PARTITION `{pname}` VALUES LESS THAN ({desc})")
+                            if part_defs:
+                                partitions_sql = ',\n  '.join(part_defs)
+                                partition_clause = f"\nPARTITION BY {method} ({expression}) (\n  {partitions_sql}\n)"
+
+                    forward = f"CREATE TABLE {table_name} (\n  " + ",\n  ".join(col_defs) + f"\n){engine_clause}{collation_clause}{comment_clause}{partition_clause};"
                     rollback = f"DROP TABLE IF EXISTS {table_name};"
                     return forward, rollback
         
@@ -1275,20 +1294,17 @@ ALTER TABLE {table_name} REMOVE PARTITIONING;"""
             return f"-- Unable to generate ADD PARTITION for {part_name}", ""
 
         part_desc = partition_info.get("description", "")
+        method = partition_info.get("partition_method", "RANGE")
 
-        # Determine partition type from description
-        if "MAXVALUE" in str(part_desc).upper() or (part_desc and not str(part_desc).startswith("(")):
-            # RANGE partition: VALUES LESS THAN
-            forward = f"""-- Add partition to table
--- Table: {table_name}
--- Partition: {part_name}
-ALTER TABLE {table_name} ADD PARTITION (PARTITION `{part_name}` VALUES LESS THAN ({part_desc}));"""
+        if method == "LIST":
+            add_sql = f"PARTITION `{part_name}` VALUES IN {part_desc}"
         else:
-            # LIST partition: VALUES IN
-            forward = f"""-- Add partition to table
+            add_sql = f"PARTITION `{part_name}` VALUES LESS THAN ({part_desc})"
+
+        forward = f"""-- Add partition to table
 -- Table: {table_name}
 -- Partition: {part_name}
-ALTER TABLE {table_name} ADD PARTITION (PARTITION `{part_name}` VALUES IN {part_desc});"""
+ALTER TABLE {table_name} ADD PARTITION ({add_sql});"""
 
         rollback = f"""-- Drop partition from table
 -- WARNING: This will DELETE all data in the partition!
@@ -1349,10 +1365,11 @@ ALTER TABLE {table_name} DROP PARTITION `{part_name}`;"""
         # Rollback needs partition definition
         if partition_info and isinstance(partition_info, dict):
             part_desc = partition_info.get("description", "")
-            if "MAXVALUE" in str(part_desc).upper() or (part_desc and not str(part_desc).startswith("(")):
-                rollback = f"ALTER TABLE {table_name} ADD PARTITION (PARTITION `{part_name}` VALUES LESS THAN ({part_desc}));"
-            else:
+            method = partition_info.get("partition_method", "RANGE")
+            if method == "LIST":
                 rollback = f"ALTER TABLE {table_name} ADD PARTITION (PARTITION `{part_name}` VALUES IN {part_desc});"
+            else:
+                rollback = f"ALTER TABLE {table_name} ADD PARTITION (PARTITION `{part_name}` VALUES LESS THAN ({part_desc}));"
         else:
             rollback = f"-- TODO: Recreate partition `{part_name}` with original definition"
 
@@ -1384,20 +1401,27 @@ ALTER TABLE {table_name} DROP PARTITION `{part_name}`;"""
         if source_info and isinstance(source_info, dict):
             source_desc = source_info.get("description", "")
             target_desc = target_info.get("description", "") if isinstance(target_info, dict) else ""
+            method = source_info.get("partition_method", "RANGE")
 
-            forward = f"""-- Partition definition changed. Manual REORGANIZE PARTITION required.
+            if method == "LIST":
+                into_clause = f"PARTITION `{part_name}` VALUES IN {source_desc}"
+                rollback_into_clause = f"PARTITION `{part_name}` VALUES IN {target_desc}"
+            else:
+                into_clause = f"PARTITION `{part_name}` VALUES LESS THAN ({source_desc})"
+                rollback_into_clause = f"PARTITION `{part_name}` VALUES LESS THAN ({target_desc})"
+
+            forward = f"""-- Partition definition changed
 -- Table: {table_name}
 -- Partition: {part_name}
--- From: {target_desc}
--- To: {source_desc}
+-- From: {target_desc} -> To: {source_desc}
 -- WARNING: REORGANIZE PARTITION may cause data movement
--- ALTER TABLE {table_name} REORGANIZE PARTITION `{part_name}` INTO (
---   PARTITION `{part_name}` VALUES LESS THAN ({source_desc})
--- );"""
-            rollback = f"""-- Reverse the partition reorganization
--- ALTER TABLE {table_name} REORGANIZE PARTITION `{part_name}` INTO (
---   PARTITION `{part_name}` VALUES LESS THAN ({target_desc})
--- );"""
+ALTER TABLE {table_name} REORGANIZE PARTITION `{part_name}` INTO (
+  {into_clause}
+);"""
+            rollback = f"""-- Reverse partition reorganization
+ALTER TABLE {table_name} REORGANIZE PARTITION `{part_name}` INTO (
+  {rollback_into_clause}
+);"""
         else:
             forward = f"-- Partition definition changed for {part_name}. Manual intervention required."
             rollback = f"-- Reverse the partition change for {part_name}"
